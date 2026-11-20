@@ -47,11 +47,46 @@ export function registerProtocol() {
     } catch (e) {
       if (e.name === 'AbortError') throw e;
     }
-    // Offline and not saved. A missing font range can be empty; a missing map tile must
-    // fail so MapLibre keeps drawing the lower-zoom tile it already has for that area.
+    // Offline and not saved. A missing font range can be empty. A missing satellite /
+    // terrain / night tile is cut out of a saved lower-zoom tile, so there are no holes.
     if (url.includes('/fonts/')) return { data: new ArrayBuffer(0) };
+    const fallback = await fromParent(url, cache).catch(() => null);
+    if (fallback) return { data: fallback };
     throw new Error(`Not available offline: ${url}`);
   });
+}
+
+// ---- parent-tile fallback for raster tiles ----
+const RASTER_TEMPLATES = () => [SAT_URL, DEM_URL, NIGHT_URL].map((t) => {
+  const order = [...t.matchAll(/\{([zxy])\}/g)].map((m) => m[1]);
+  const re = new RegExp(`^${t.replace(/[.*+?^$()|[\]\\]/g, '\\$&').replace(/\\?\{[zxy]\\?\}/g, '(\\d+)')}$`);
+  return { t, order, re, dem: t === DEM_URL, jpeg: t.endsWith('.jpg') };
+});
+let templates;
+async function fromParent(url, cache) {
+  templates ??= RASTER_TEMPLATES();
+  const tpl = templates.find((x) => x.re.test(url));
+  if (!tpl) return null;
+  const nums = url.match(tpl.re).slice(1).map(Number);
+  const c = {}; tpl.order.forEach((k, i) => { c[k] = nums[i]; });
+  for (let k = 1; k <= 6 && c.z - k >= 0; k++) {
+    const pz = c.z - k, px = c.x >> k, py = c.y >> k;
+    const purl = tpl.t.replace('{z}', pz).replace('{x}', px).replace('{y}', py);
+    const hit = await cache.match(purl, { ignoreVary: true });
+    if (!hit) continue;
+    const bmp = await createImageBitmap(await hit.blob());
+    const size = bmp.width / 2 ** k;
+    const sx = (c.x - (px << k)) * size, sy = (c.y - (py << k)) * size;
+    const W = bmp.width;
+    const canvas = typeof OffscreenCanvas !== 'undefined' ? new OffscreenCanvas(W, W) : Object.assign(document.createElement('canvas'), { width: W, height: W });
+    const ctx = canvas.getContext('2d');
+    ctx.imageSmoothingEnabled = !tpl.dem; // never blend terrain heights
+    ctx.drawImage(bmp, sx, sy, size, size, 0, 0, W, W);
+    const type = tpl.jpeg ? 'image/jpeg' : 'image/png';
+    const blob = canvas.convertToBlob ? await canvas.convertToBlob({ type, quality: 0.85 }) : await new Promise((r) => canvas.toBlob(r, type, 0.85));
+    return blob.arrayBuffer();
+  }
+  return null;
 }
 
 async function fetchJSON(url, ms = 8000) {
@@ -131,26 +166,58 @@ export const SAT_URL = 'https://tiles.maps.eox.at/wmts/1.0.0/s2cloudless-2024_38
 export const DEM_URL = 'https://s3.amazonaws.com/elevation-tiles-prod/terrarium/{z}/{x}/{y}.png';
 export const NIGHT_URL = 'https://gibs.earthdata.nasa.gov/wmts/epsg3857/best/VIIRS_Black_Marble/default/2016-01-01/GoogleMapsCompatible_Level8/{z}/{y}/{x}.png';
 const DEM_MAX = 9;
+const SAT_MAX = 13; // ~19 m/pixel: sharp enough for the window view near the route
+// Extra-detail satellite strip either side of the route, on top of PLAN.
+export const HI_PLAN = [
+  { zmin: 12, zmax: 12, km: 32 },
+  { zmin: 13, zmax: 13, km: 9 },
+];
 
 export const SKY = {
   day: { 'sky-color': '#3f86d6', 'horizon-color': '#cfe2f6', 'fog-color': '#dbe6f2', 'sky-horizon-blend': 0.7, 'horizon-fog-blend': 0.6, 'fog-ground-blend': 0.55, 'atmosphere-blend': 0 },
   night: { 'sky-color': '#02040b', 'horizon-color': '#0c1830', 'fog-color': '#060c1a', 'sky-horizon-blend': 0.5, 'horizon-fog-blend': 0.5, 'fog-ground-blend': 0.6, 'atmosphere-blend': 0 },
 };
 
+// Night city lights drawn from the map data: glowing roads, warm towns, black water.
+export const NIGHT_LAYERS = ['n-water', 'n-urban', 'n-glow', 'n-road-minor', 'n-road-mid', 'n-road-major-glow', 'n-road-major'];
+function nightLightLayers() {
+  const v = { source: 'omt', layout: { visibility: 'none' } };
+  const cls = (list) => ['in', ['get', 'class'], ['literal', list]];
+  const w = (a, b, c) => ['interpolate', ['exponential', 1.6], ['zoom'], 6, a, 10, b, 14, c];
+  return [
+    { id: 'n-water', type: 'fill', ...v, 'source-layer': 'water', paint: { 'fill-color': '#000000', 'fill-opacity': 0.9 } },
+    { id: 'n-urban', type: 'fill', ...v, 'source-layer': 'landuse', filter: cls(['residential', 'commercial', 'industrial', 'retail']), paint: { 'fill-color': '#4a2f0c', 'fill-opacity': 0.55 } },
+    {
+      id: 'n-glow', type: 'circle', ...v, 'source-layer': 'place', filter: cls(['city', 'town']),
+      paint: {
+        'circle-radius': ['interpolate', ['linear'], ['zoom'], 5, ['match', ['get', 'class'], 'city', 9, 3], 10, ['match', ['get', 'class'], 'city', 70, 22]],
+        'circle-color': '#ffb457', 'circle-blur': 1, 'circle-opacity': 0.4, 'circle-pitch-alignment': 'map',
+      },
+    },
+    { id: 'n-road-minor', type: 'line', ...v, 'source-layer': 'transportation', filter: cls(['tertiary', 'minor', 'service']), paint: { 'line-color': '#ffe9b8', 'line-width': w(0.15, 0.5, 1.6), 'line-opacity': 0.6, 'line-blur': 0.4 } },
+    { id: 'n-road-mid', type: 'line', ...v, 'source-layer': 'transportation', filter: cls(['primary', 'secondary']), paint: { 'line-color': '#ffc56e', 'line-width': w(0.3, 1.1, 3), 'line-opacity': 0.9, 'line-blur': 0.6 } },
+    { id: 'n-road-major-glow', type: 'line', ...v, 'source-layer': 'transportation', filter: cls(['motorway', 'trunk']), paint: { 'line-color': '#ff8a2a', 'line-width': w(1.5, 5, 12), 'line-opacity': 0.55, 'line-blur': 4 } },
+    { id: 'n-road-major', type: 'line', ...v, 'source-layer': 'transportation', filter: cls(['motorway', 'trunk']), paint: { 'line-color': '#ffd79a', 'line-width': w(0.4, 1.3, 3), 'line-opacity': 1 } },
+  ];
+}
+
 export function buildEarthStyle(base) {
+  const vec = base && Object.values(base.sources || {}).find((s) => s.type === 'vector' && s.tiles);
   return {
     version: 8,
     name: 'earth',
     glyphs: base?.glyphs,
     sources: {
-      sat: { type: 'raster', tiles: [toProto(SAT_URL)], tileSize: 256, maxzoom: MAX_Z, attribution: '<a href="https://s2maps.eu">Sentinel-2 cloudless</a> by EOX IT Services GmbH (Contains modified Copernicus Sentinel data 2024)' },
+      sat: { type: 'raster', tiles: [toProto(SAT_URL)], tileSize: 256, maxzoom: SAT_MAX, attribution: '<a href="https://s2maps.eu">Sentinel-2 cloudless</a> by EOX IT Services GmbH (Contains modified Copernicus Sentinel data 2024)' },
       dem: { type: 'raster-dem', tiles: [toProto(DEM_URL)], tileSize: 256, encoding: 'terrarium', maxzoom: DEM_MAX, attribution: 'Terrain: Mapzen / AWS Terrain Tiles' },
       night: { type: 'raster', tiles: [toProto(NIGHT_URL)], tileSize: 256, maxzoom: 8, attribution: 'Night lights: NASA Black Marble' },
+      ...(vec ? { omt: { type: 'vector', tiles: vec.tiles, minzoom: vec.minzoom ?? 0, maxzoom: vec.maxzoom ?? MAX_Z, attribution: vec.attribution } } : {}),
     },
     layers: [
-      { id: 'bg', type: 'background', paint: { 'background-color': '#0d1626' } },
-      { id: 'sat', type: 'raster', source: 'sat', paint: { 'raster-fade-duration': 0 } },
-      { id: 'night', type: 'raster', source: 'night', layout: { visibility: 'none' }, paint: { 'raster-fade-duration': 0, 'raster-opacity': 0.92 } },
+      { id: 'bg', type: 'background', paint: { 'background-color': '#56604a' } },
+      { id: 'sat', type: 'raster', source: 'sat', paint: { 'raster-fade-duration': 0, 'raster-contrast': 0.12, 'raster-saturation': 0.12 } },
+      { id: 'night', type: 'raster', source: 'night', layout: { visibility: 'none' }, paint: { 'raster-fade-duration': 0, 'raster-opacity': 0.55 } },
+      ...(vec ? nightLightLayers() : []),
     ],
     terrain: { source: 'dem', exaggeration: 1.6 },
     sky: SKY.day,
@@ -160,14 +227,14 @@ export function buildEarthStyle(base) {
 // Average bytes per tile, used only for the size estimate shown before saving.
 const AVG = { vector: 45e3, raster: 25e3, 'raster-dem': 70e3 };
 
-export function buildUrlList(style, path, spots, tiles = corridorTiles(path, PLAN, spots)) {
+export function buildUrlList(style, path, spots, tiles = corridorTiles(path, PLAN, spots), { skipVector = false } = {}) {
   const urls = [];
   let estBytes = 0;
   for (const src of Object.values(style.sources)) {
-    if (!src.tiles) continue;
+    if (!src.tiles || (skipVector && src.type === 'vector')) continue;
     const tpl = fromProto(src.tiles[0]);
     const minz = src.minzoom ?? 0;
-    const maxz = Math.min(src.maxzoom ?? 22, MAX_Z);
+    const maxz = src.maxzoom ?? MAX_Z;
     const avg = src.tiles[0].includes('Black_Marble') ? 10e3 : AVG[src.type] ?? 30e3;
     for (const [z, x, y] of tiles) {
       if (z < minz || z > maxz) continue;
@@ -176,7 +243,7 @@ export function buildUrlList(style, path, spots, tiles = corridorTiles(path, PLA
     }
   }
   const tileCount = urls.length;
-  if (style.glyphs) {
+  if (style.glyphs && !skipVector) {
     const g = fromProto(style.glyphs);
     for (const fs of fontStacks(style))
       for (const r of GLYPH_RANGES) urls.push(g.replace('{fontstack}', fs.join(',')).replace('{range}', `${r}-${r + 255}`));

@@ -128,3 +128,12 @@ export function corridorTiles(path, plan, spots = []) {
   }
   return [...set].map((k) => k.split('/').map(Number));
 }
+
+// Point reached travelling `km` from p on initial bearing `brg`.
+export function destination(p, brg, km) {
+  const d = km / R, b = rad(brg), p1 = rad(p[1]), l1 = rad(p[0]);
+  const p2 = Math.asin(Math.sin(p1) * Math.cos(d) + Math.cos(p1) * Math.sin(d) * Math.cos(b));
+  const l2 = l1 + Math.atan2(Math.sin(b) * Math.sin(d) * Math.cos(p1), Math.cos(d) - Math.sin(p1) * Math.sin(p2));
+  return [deg(l2), deg(p2)];
+}
+export const angDiff = (a, b) => ((((b - a + 540) % 360) + 360) % 360) - 180;

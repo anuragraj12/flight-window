@@ -186,3 +186,70 @@ button.icon { width: 46px; padding: 12px 0; flex: none; }
 .look-now { display: inline-block; margin-left: 6px; padding: 2px 8px; border-radius: 99px; background: var(--pink); color: #fff; font-size: 11.5px; font-weight: 700; animation: pulse 1.4s ease-in-out infinite; }
 @keyframes pulse { 50% { opacity: 0.55; } }
 .upcoming .up.mine .up-name { font-weight: 700; }
+
+/* ---- v3: immersive flight screen ---- */
+.fly-top { position: absolute; top: calc(8px + var(--safe-t)); left: 8px; right: 8px; display: flex; gap: 8px; align-items: center; z-index: 3; }
+.ibtn { width: 38px; height: 38px; border-radius: 12px; padding: 0; flex: none; font-size: 18px; line-height: 1;
+  background: rgba(8, 12, 22, 0.55); border: 1px solid rgba(255, 255, 255, 0.12); backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px); }
+.ibtn.on { background: rgba(76, 201, 240, 0.25); border-color: rgba(76, 201, 240, 0.6); }
+.ibtn.small { width: 34px; height: 34px; font-size: 15px; }
+.seg.mini { flex: 1; max-width: 250px; margin: 0 auto; padding: 3px; border-radius: 12px; background: rgba(8, 12, 22, 0.55); border: 1px solid rgba(255, 255, 255, 0.12); backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px); }
+.seg.mini button { padding: 6px 4px; font-size: 13px; border-radius: 9px; }
+.stats-line { position: absolute; top: calc(54px + var(--safe-t)); left: 0; right: 0; display: flex; justify-content: center; gap: 12px; flex-wrap: wrap;
+  font-size: 12px; color: rgba(234, 242, 255, 0.82); text-shadow: 0 1px 3px rgba(0, 0, 0, 0.9), 0 0 8px rgba(0, 0, 0, 0.6); pointer-events: none; z-index: 3; font-variant-numeric: tabular-nums; }
+.stats-line b { color: #fff; font-weight: 700; }
+.dock { position: absolute; left: 8px; right: 8px; bottom: calc(8px + var(--safe-b)); border-radius: 18px; padding: 0; z-index: 3; overflow: hidden; background: rgba(8, 12, 22, 0.72); }
+@media (min-width: 720px) { .dock { left: 20px; right: auto; width: 400px; } .fly-top { right: auto; width: 420px; } .stats-line { right: auto; width: 436px; } }
+.dock-row { display: flex; align-items: center; gap: 10px; padding: 11px 14px; cursor: pointer; min-height: 48px; }
+.dock-main { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-size: 14.5px; }
+.dock-main .muted, .muted { color: var(--muted); }
+.dot { width: 9px; height: 9px; border-radius: 50%; background: #56627a; flex: none; }
+.dot.ok { background: var(--ok); box-shadow: 0 0 8px var(--ok); }
+.dot.wait { background: #ffd27a; }
+.dot.bad { background: var(--pink); }
+.dot.sim { background: #a78bfa; box-shadow: 0 0 8px #a78bfa; }
+.dock-body { display: none; padding: 0 14px 14px; max-height: 58vh; overflow-y: auto; }
+.dock.open .dock-body { display: block; }
+.dock .bar.thin { margin: 0 0 10px; }
+.dock-sub { display: flex; gap: 8px; align-items: center; color: var(--muted); font-size: 12.5px; margin-bottom: 8px; flex-wrap: wrap; }
+.below-big { margin-bottom: 6px; }
+.below-big b { font-size: 19px; }
+.below-big small { color: var(--muted); }
+.below-big .sub { color: var(--muted); font-size: 13px; }
+.dock .controls button { padding: 10px 12px; }
+.sim-row .seg.small button { padding: 6px 9px; }
+.look-row .ibtn.small { flex: none; }
+.tap-hint { display: none; position: absolute; bottom: calc(14px + var(--safe-b)); left: 50%; transform: translateX(-50%); font-size: 12px; color: rgba(255, 255, 255, 0.6); text-shadow: 0 1px 3px #000; pointer-events: auto; padding: 6px 12px; z-index: 3; }
+body.ui-off .fly-top, body.ui-off .stats-line, body.ui-off .dock, body.ui-off .maplibregl-control-container, body.ui-off .window-hint { display: none !important; }
+body.ui-off .tap-hint { display: block; animation: fadeout 4s forwards; }
+@keyframes fadeout { 70% { opacity: 1; } 100% { opacity: 0.25; } }
+body.flying .maplibregl-ctrl-bottom-right { top: calc(80px + var(--safe-t)) !important; }
+
+/* cabin window */
+#cabin { position: fixed; inset: 0; pointer-events: none; z-index: 1; --wall: #d5d8de; --bezel: #eef0f3; }
+#cabin.night { --wall: #0c0e12; --bezel: #1b1e24; }
+#cabin .pane { position: absolute; left: 5vw; right: 5vw; top: calc(88px + var(--safe-t)); bottom: calc(70px + var(--safe-b)); border-radius: 46% / 26%; overflow: hidden;
+  box-shadow: 0 0 0 100vmax var(--wall), 0 0 0 14px var(--bezel), inset 0 0 0 2px rgba(0, 0, 0, 0.25); }
+@media (min-width: 720px) { #cabin .pane { left: 50%; right: auto; width: min(520px, 70vw); transform: translateX(-50%); } }
+#cabin .glass-sheen { position: absolute; inset: 0; border-radius: inherit;
+  background: linear-gradient(125deg, rgba(255, 255, 255, 0.09) 0%, rgba(255, 255, 255, 0) 32%, rgba(255, 255, 255, 0) 70%, rgba(255, 255, 255, 0.05) 100%);
+  box-shadow: inset 0 0 60px 18px rgba(0, 0, 0, 0.45); }
+#cabin.night .glass-sheen { box-shadow: inset 0 0 70px 24px rgba(0, 0, 0, 0.7); background: linear-gradient(125deg, rgba(255, 255, 255, 0.04), transparent 35%); }
+#cabin .wing { position: absolute; left: 0; right: 0; bottom: 4%; height: 66%; }
+#cabin.left .wing { transform: scaleX(-1); }
+.wing-svg { width: 100%; height: 100%; display: block; }
+.wing-svg .w1 { stop-color: #f3f5f8; }
+.wing-svg .w2 { stop-color: #8a939e; }
+#cabin.night .wing-svg .w1 { stop-color: #3b414b; }
+#cabin.night .wing-svg .w2 { stop-color: #0a0b0e; }
+.wing-svg .nav { fill: #2bff7f; filter: drop-shadow(0 0 6px #2bff7f); }
+#cabin.left .wing-svg .nav { fill: #ff3346; filter: drop-shadow(0 0 6px #ff3346); }
+.wing-svg .strobe { fill: #fff; opacity: 0; filter: blur(2px) drop-shadow(0 0 16px #fff); animation: strobe 1.6s infinite; }
+@keyframes strobe { 0%, 5% { opacity: 1; } 9%, 100% { opacity: 0; } }
+body.in-cabin .stats-line { top: calc(54px + var(--safe-t)); }
+body.in-cabin .dock { background: rgba(8, 12, 22, 0.8); }
+body.in-cabin:not(.ui-off) .maplibregl-ctrl-bottom-right { top: calc(96px + var(--safe-t)) !important; right: 6vw; }
+
+#credits { position: fixed; right: 6px; bottom: 2px; z-index: 4; max-width: 70vw; font-size: 8.5px; line-height: 1.2; color: rgba(255, 255, 255, 0.55); text-align: right; pointer-events: none; text-shadow: 0 1px 2px #000; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+body:not(.flying) #credits { color: rgba(30, 40, 60, 0.6); text-shadow: none; bottom: auto; top: calc(2px + var(--safe-t)); }
+body.ui-off #credits { opacity: 0.35; }

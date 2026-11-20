@@ -3,10 +3,10 @@ import './style.css';
 import * as maplibregl from 'maplibre-gl';
 import workerUrl from 'maplibre-gl/dist/maplibre-gl-worker.mjs?url';
 import { registerSW } from 'virtual:pwa-register';
-import { dist, bearing, greatCircle, buildPath, pointAt, headingAt, project, sideOf, corridorTiles } from './geo.js';
+import { dist, bearing, greatCircle, buildPath, pointAt, headingAt, project, sideOf, corridorTiles, destination, angDiff } from './geo.js';
 import {
   registerProtocol, getStyle, buildStyle, buildEarthStyle, saveStyle, loadSavedStyle,
-  buildUrlList, prefetch, clearAll, fontStacks, MAX_Z, PLAN, SKY,
+  buildUrlList, prefetch, clearAll, fontStacks, MAX_Z, PLAN, HI_PLAN, SKY, NIGHT_LAYERS,
 } from './offline.js';
 import { readTicket, seatInfo } from './boarding.js';
 
@@ -37,7 +37,8 @@ const state = {
   watchId: null, simTimer: null, simAlong: 0, follow: true,
   view: 'map', look: 'side', tilt: 76, night: hourNow >= 18 || hourNow < 6,
   vectorStyle: null, earthStyle: null, styleName: null,
-  wake: null, marker: null, track: [], installEvt: null, ticket: null, collapsed: false,
+  wake: null, marker: null, track: [], installEvt: null, ticket: null,
+  dockOpen: false, frame: true, simSpeed: 1, simRunning: false,
 };
 
 function loadTrips() { try { return JSON.parse(localStorage.getItem('fw-trips') || '[]'); } catch { return []; } }
@@ -127,16 +128,32 @@ async function initMap() {
     container: 'map',
     style: style || blankStyle(),
     center: [78.5, 21], zoom: 3.3, minZoom: 1.5, maxZoom: 14, maxPitch: 85,
-    attributionControl: { compact: true },
+    attributionControl: false,
     fadeDuration: 0,
+    pixelRatio: Math.min(window.devicePixelRatio || 1, 2),
   });
   state.styleName = 'vector';
+  // tap the map during a flight to hide / show all controls
+  state.map.on('click', () => { if (document.body.classList.contains('flying')) document.body.classList.toggle('ui-off'); });
   state.map.on('style.load', addOverlays);
-  // keep the credits button small (tap ⓘ to read them)
-  state.map.on('styledata', () => document.querySelector('.maplibregl-ctrl-attrib.maplibregl-compact-show')?.classList.remove('maplibregl-compact-show'));
+  // small always-visible credits line, built from the current style's sources
+  state.map.on('styledata', updateCredits);
   state.map.on('error', (e) => { if (!/Not available offline/.test(e?.error?.message || '')) console.warn(e?.error || e); });
   state.map.on('dragstart', () => { if (state.live && state.follow && state.view !== 'window') setFollow(false); });
+  document.addEventListener('click', (e) => { if (document.body.classList.contains('ui-off') && e.target.closest('#cabin, .tap-hint')) document.body.classList.remove('ui-off'); });
   await new Promise((r) => state.map.once('load', r));
+}
+
+function updateCredits() {
+  let el = document.getElementById('credits');
+  if (!el) { el = document.createElement('div'); el.id = 'credits'; document.body.appendChild(el); }
+  const st = state.map.getStyle();
+  const parts = new Set();
+  for (const src of Object.values(st?.sources || {})) {
+    const a = (src.attribution || '').replace(/<[^>]+>/g, '').replace(/\s+/g, ' ').trim();
+    if (a) a.split(/\s*[|·]\s*|\s(?=©)/).forEach((x) => x && parts.add(x));
+  }
+  el.textContent = [...parts].join(' · ');
 }
 
 function setMapStyle(style, name) {
@@ -215,11 +232,17 @@ function applyNight() {
   document.body.classList.toggle('dim', state.night && state.styleName === 'vector' && !!state.route);
   const m = state.map;
   if (state.styleName !== 'earth' || !m.getLayer('sat')) return;
-  m.setLayoutProperty('night', 'visibility', state.night ? 'visible' : 'none');
-  m.setPaintProperty('sat', 'raster-brightness-max', state.night ? 0.16 : 1);
-  m.setPaintProperty('sat', 'raster-saturation', state.night ? -0.5 : 0.1);
-  m.setPaintProperty('sat', 'raster-contrast', state.night ? 0 : 0.08);
+  const vis = state.night ? 'visible' : 'none';
+  m.setLayoutProperty('night', 'visibility', vis);
+  for (const id of NIGHT_LAYERS) if (m.getLayer(id)) m.setLayoutProperty(id, 'visibility', vis);
+  m.setPaintProperty('sat', 'raster-brightness-max', state.night ? 0.07 : 1);
+  m.setPaintProperty('sat', 'raster-saturation', state.night ? -0.7 : 0.12);
+  m.setPaintProperty('sat', 'raster-contrast', state.night ? 0 : 0.12);
   m.setSky(state.night ? SKY.night : SKY.day);
+  m.setPaintProperty('bg', 'background-color', state.night ? '#000000' : '#56604a');
+  if (m.getLayer('poi-label')) {
+    m.setPaintProperty('poi-label', 'text-color', state.night ? '#ffe8c2' : '#ffffff');
+  }
 }
 
 // ---------- screens ----------
@@ -384,9 +407,10 @@ async function preview(from, to, meta) {
   const best = Math.abs(s.L - s.R) < 1.5 ? null : s.L > s.R ? 'L' : 'R';
   const si = seatInfo(meta.seat);
   const spots = [[from.lon, from.lat, 25, MAX_Z], [to.lon, to.lat, 25, MAX_Z]];
-  const tiles = corridorTiles(route.path, PLAN, spots);
+  const hiSpots = spots.map(([x, y]) => [x, y, 15, 13]);
+  const tiles = corridorTiles(route.path, [...PLAN, ...HI_PLAN], [...spots, ...hiSpots]);
   const vec = state.vectorStyle ? buildUrlList(state.vectorStyle, route.path, spots, tiles) : { estBytes: 0 };
-  const earth = buildUrlList(buildEarthStyle(state.vectorStyle), route.path, spots, tiles);
+  const earth = buildUrlList(buildEarthStyle(state.vectorStyle), route.path, spots, tiles, { skipVector: true });
   let seatMsg;
   if (si && si.side !== 'C') {
     const mine = si.side === 'L' ? s.nL : s.nR;
@@ -406,7 +430,7 @@ async function preview(from, to, meta) {
       <div class="seat-side R ${best === 'R' ? 'best' : ''} ${si?.side === 'R' ? 'mine' : ''}"><b>Right side</b><span>${s.nR} places${si?.side === 'R' ? ' · you' : ''}</span></div>
     </div>
     ${seatMsg}
-    <label class="check"><input type="checkbox" id="opt-earth" checked><span><b>3D satellite & window view</b><small>Terrain, satellite imagery and night city lights · +${fmtMB(earth.estBytes)}</small></span></label>
+    <label class="check"><input type="checkbox" id="opt-earth" checked><span><b>3D satellite & window view</b><small>Sharp satellite ground, terrain and glowing night city lights · +${fmtMB(earth.estBytes)}</small></span></label>
     <button class="primary wide" id="btn-save">Save for offline · ~<span id="size">${fmtMB(vec.estBytes + earth.estBytes)}</span></button>
     <div id="save-progress"></div>`;
   $('#opt-earth').onchange = (e) => { $('#size').textContent = fmtMB(vec.estBytes + (e.target.checked ? earth.estBytes : 0)); };
@@ -420,7 +444,8 @@ async function saveTrip(route, meta, withEarth) {
     await navigator.serviceWorker?.ready;
     const style = await buildStyle();
     const spots = [[route.from.lon, route.from.lat, 25, MAX_Z], [route.to.lon, route.to.lat, 25, MAX_Z]];
-    const tiles = corridorTiles(route.path, PLAN, spots);
+    const hiSpots = spots.map(([x, y]) => [x, y, 15, 13]);
+    const tiles = corridorTiles(route.path, [...PLAN, ...HI_PLAN], [...spots, ...hiSpots]);
     const urls = new Set(buildUrlList(style, route.path, spots, tiles).urls);
     const earthStyle = withEarth ? buildEarthStyle(style) : null;
     if (earthStyle) buildUrlList(earthStyle, route.path, spots, tiles).urls.forEach((u) => urls.add(u));
@@ -458,97 +483,128 @@ async function openTrip(id) {
   const trip = state.trips.find((t) => t.id === id);
   if (!trip) return renderHome();
   app.innerHTML = `<div class="sheet glass"><div class="note">Opening ${esc(trip.from.code)} → ${esc(trip.to.code)}…</div></div>`;
-  const [vs, es] = await Promise.all([loadSavedStyle(trip.id), trip.earth ? loadSavedStyle(`${trip.id}-earth`) : null]);
+  const vs = await loadSavedStyle(trip.id);
   if (vs) state.vectorStyle = vs;
-  state.earthStyle = es;
+  // Built fresh from the trip's own map style so its night-light layers use tiles already saved.
+  state.earthStyle = trip.earth ? buildEarthStyle(state.vectorStyle) : null;
   state.trip = trip;
   state.route = await makeRoute(trip.from, trip.to);
   try { state.track = JSON.parse(localStorage.getItem(`fw-track-${trip.id}`) || '[]'); } catch { state.track = []; }
-  state.view = es ? '3d' : 'map';
+  state.view = state.earthStyle ? '3d' : 'map';
+  state.dockOpen = false;
   await applyViewStyle();
   refreshOverlayData();
   renderFly();
-  fitRoute(300, state.view === 'map' ? 0 : 50);
+  fitRoute(160, state.view === 'map' ? 0 : 50);
 }
 
 function mySide() { return state.trip?.side || ''; }
+const effLook = () => (state.look === 'side' ? (mySide() || 'L') : state.look);
 
+// ---------- flight screen ----------
 function renderFly() {
   const r = state.route, t = state.trip;
-  const side = mySide();
+  document.body.classList.add('flying');
   app.innerHTML = `
-    <div class="hud glass">
-      <div><b id="h-alt">—</b><span>alt ft</span></div>
-      <div><b id="h-spd">—</b><span>km/h</span></div>
-      <div><b id="h-hdg">—</b><span>heading</span></div>
-      <div><b id="h-rem">${Math.round(r.path.total).toLocaleString()}</b><span>km left</span></div>
-      <div><b id="h-eta">—</b><span>arrive</span></div>
-    </div>
-    <div class="topbar">
-      <button class="back glass" data-action="home" aria-label="Back">‹</button>
-      <div class="seg glass" id="views">
+    <div class="fly-top">
+      <button class="ibtn" data-action="home" aria-label="Back">‹</button>
+      <div class="seg mini" id="views">
         <button data-action="view" data-v="map" class="${state.view === 'map' ? 'on' : ''}">Map</button>
         <button data-action="view" data-v="3d" class="${state.view === '3d' ? 'on' : ''}" ${state.earthStyle ? '' : 'disabled'}>3D</button>
         <button data-action="view" data-v="window" class="${state.view === 'window' ? 'on' : ''}" ${state.earthStyle ? '' : 'disabled'}>Window</button>
       </div>
-      <button class="glass icon round ${state.night ? 'on' : ''}" data-action="night" id="btn-night" title="Day / night">${state.night ? '☾' : '☀'}</button>
+      <button class="ibtn ${state.night ? 'on' : ''}" data-action="night" id="btn-night" aria-label="Day or night">${state.night ? '☾' : '☀'}</button>
+    </div>
+    <div class="stats-line" id="stats">
+      <span><b id="h-alt">—</b> ft</span><span><b id="h-spd">—</b> km/h</span><span><b id="h-hdg">—</b></span><span><b id="h-rem">${Math.round(r.path.total).toLocaleString()}</b> km left</span><span>ETA <b id="h-eta">—</b></span>
     </div>
     <div id="window-hint" class="window-hint hidden"></div>
-    <div class="sheet glass fly ${state.collapsed ? 'collapsed' : ''}" id="fly-sheet">
-      <div class="fly-head" data-action="collapse">
-        <div><div class="fly-title">${esc(r.from.code)} → ${esc(r.to.code)}${t.carrier ? `<small> ${esc(t.carrier)} ${esc(t.flight)}</small>` : ''}</div>
-        <div class="fly-sub">${t.seat ? `Seat ${esc(t.seat)}${side ? ` · ${sideWord(side)} side` : ''}<span id="faces"></span>` : 'Add your seat when saving to see your side'}</div></div>
-        <div class="fly-head-r"><span id="gps-pill" class="pill">GPS off</span><span class="chev">${state.collapsed ? '▴' : '▾'}</span></div>
+    <div class="tap-hint">Tap to show controls</div>
+    <div class="dock glass ${state.dockOpen ? 'open' : ''}" id="dock">
+      <div class="dock-row" data-action="dock">
+        <span id="gps-dot" class="dot"></span>
+        <div class="dock-main" id="below-line"><b>${esc(r.from.code)} → ${esc(r.to.code)}</b>${t.carrier ? ` · ${esc(t.carrier)} ${esc(t.flight)}` : ''}${t.seat ? ` · Seat ${esc(t.seat)}` : ''}</div>
+        <span class="chev">${state.dockOpen ? '▾' : '▴'}</span>
       </div>
-      <div class="bar thin"><div id="prog"></div></div>
-      <div class="below"><span class="lbl">Below you</span><div id="below">Tap <b>Start GPS</b> by the window, or <b>Simulate</b> to try it.</div></div>
-      <div class="more">
+      <div class="dock-body">
+        <div class="bar thin"><div id="prog"></div></div>
+        <div class="dock-sub"><span id="gps-pill" class="pill">GPS off</span><span id="seat-line">${t.seat ? `Seat ${esc(t.seat)}${mySide() ? ` · ${sideWord(mySide())} side` : ''}<span id="faces"></span>` : ''}</span></div>
+        <div id="below" class="below-big"></div>
         <div id="upcoming" class="upcoming"></div>
         <div id="look-row" class="look-row ${state.view === 'window' ? '' : 'hidden'}">
           <div class="seg small">
-            <button data-action="look" data-l="L" class="${lookOn('L')}">Left</button>
-            <button data-action="look" data-l="F" class="${lookOn('F')}">Front</button>
-            <button data-action="look" data-l="R" class="${lookOn('R')}">Right</button>
+            <button data-action="look" data-l="L" class="${effLook() === 'L' ? 'on' : ''}">Left</button>
+            <button data-action="look" data-l="F" class="${effLook() === 'F' ? 'on' : ''}">Front</button>
+            <button data-action="look" data-l="R" class="${effLook() === 'R' ? 'on' : ''}">Right</button>
           </div>
           <input type="range" id="tilt" min="55" max="85" value="${state.tilt}" aria-label="Look down or up">
+          <button class="ibtn small ${state.frame ? 'on' : ''}" data-action="frame" title="Window frame">▢</button>
         </div>
         <div class="controls">
           <button class="primary" data-action="gps" id="btn-gps">Start GPS</button>
           <button data-action="sim" id="btn-sim">Simulate</button>
           <button class="icon ${state.follow ? 'on' : ''}" data-action="follow" id="btn-follow" title="Follow plane">⌖</button>
         </div>
-        <div id="sim-row" class="sim-row hidden"><button class="icon" data-action="play" id="btn-play">▶</button><input type="range" id="sim-range" min="0" max="1000" value="0"></div>
+        <div id="sim-row" class="sim-row hidden">
+          <button class="icon" data-action="play" id="btn-play">▶</button>
+          <div class="seg small" id="speeds">${[1, 10, 60].map((k) => `<button data-action="speed" data-k="${k}" class="${state.simSpeed === k ? 'on' : ''}">${k}×</button>`).join('')}</div>
+          <input type="range" id="sim-range" min="0" max="1000" value="0">
+        </div>
       </div>
     </div>`;
   $('#sim-range').addEventListener('input', (e) => {
-    pauseSim();
     state.simAlong = (e.target.value / 1000) * state.route.path.total;
-    update(simState(state.simAlong));
+    ingest(simState(state.simAlong), true);
   });
-  $('#tilt').addEventListener('input', (e) => { state.tilt = +e.target.value; if (state.live) applyCamera(state.live, true); });
+  $('#tilt').addEventListener('input', (e) => { state.tilt = +e.target.value; });
   updateWindowHint();
-  if (state.live) update(state.live);
+  updateCabin();
+  if (state.live) renderInfo(true);
 }
 
-function setCollapsed(on) {
-  state.collapsed = on;
-  $('#fly-sheet')?.classList.toggle('collapsed', on);
-  const c = $('.chev'); if (c) c.textContent = on ? '▴' : '▾';
-}
-
-function lookOn(l) {
-  const eff = state.look === 'side' ? (mySide() || 'L') : state.look;
-  return eff === l ? 'on' : '';
+function setDock(open) {
+  state.dockOpen = open;
+  $('#dock')?.classList.toggle('open', open);
+  const c = $('#dock .chev'); if (c) c.textContent = open ? '▾' : '▴';
 }
 
 function updateWindowHint() {
   const h = $('#window-hint'); if (!h) return;
   const show = state.view === 'window' && !state.live;
   h.classList.toggle('hidden', !show);
-  if (show) h.innerHTML = 'Window view follows your position.<br>Tap <b>Start GPS</b> or <b>Simulate</b>.';
+  if (show) h.innerHTML = 'The window view follows your position.<br>Open the panel below and tap <b>Start GPS</b> or <b>Simulate</b>.';
 }
 
-// ---------- views & camera ----------
+// ---------- cabin window overlay (frame + wing) ----------
+const WING = `
+<svg viewBox="0 0 400 300" preserveAspectRatio="xMaxYMax meet" class="wing-svg">
+  <defs>
+    <linearGradient id="wg" x1="0" y1="0" x2="0" y2="1"><stop offset="0" class="w1"/><stop offset="1" class="w2"/></linearGradient>
+    <linearGradient id="wl" x1="0" y1="0" x2="1" y2="0"><stop offset="0" class="w2"/><stop offset="1" class="w1"/></linearGradient>
+  </defs>
+  <path d="M-60 214 L318 150 Q330 147 334 150 L338 160 L-60 336 Z" fill="url(#wg)"/>
+  <path d="M318 150 Q331 146 336 132 L352 46 Q354 40 359 42 L362 46 L347 152 Q344 158 336 160 Z" fill="url(#wl)"/>
+  <path d="M-60 214 L318 150" stroke="rgba(255,255,255,0.35)" stroke-width="1.2" fill="none"/>
+  <circle class="nav" cx="350" cy="150" r="3.2"/>
+  <circle class="strobe" cx="350" cy="150" r="10"/>
+</svg>`;
+
+function updateCabin() {
+  let c = $('#cabin');
+  const show = state.route && state.view === 'window' && state.frame && effLook() !== 'F';
+  if (!show) { c?.remove(); document.body.classList.remove('in-cabin'); return; }
+  if (!c) {
+    c = document.createElement('div');
+    c.id = 'cabin';
+    c.innerHTML = `<div class="pane"><div class="wing">${WING}</div><div class="glass-sheen"></div></div>`;
+    document.body.insertBefore(c, app);
+  }
+  c.classList.toggle('left', effLook() === 'L');
+  c.classList.toggle('night', state.night);
+  document.body.classList.add('in-cabin');
+}
+
+// ---------- views ----------
 async function applyViewStyle() {
   if (state.view === 'map') await setMapStyle(state.vectorStyle, 'vector');
   else await setMapStyle(state.earthStyle, 'earth');
@@ -558,41 +614,84 @@ async function applyViewStyle() {
 async function setView(v) {
   if (v === state.view) return;
   state.view = v;
-  setCollapsed(v === 'window');
   document.querySelectorAll('#views button').forEach((b) => b.classList.toggle('on', b.dataset.v === v));
   $('#look-row')?.classList.toggle('hidden', v !== 'window');
+  if (v === 'window') setDock(false);
   await applyViewStyle();
   if (state.marker) state.marker.getElement().style.display = v === 'window' ? 'none' : '';
   updateWindowHint();
-  if (state.live) { setFollow(true); applyCamera(state.live, true); }
-  else fitRoute(300, v === 'map' ? 0 : 50);
+  updateCabin();
+  if (state.live) setFollow(true);
+  else fitRoute(160, v === 'map' ? 0 : 50);
 }
 
-function lookBearing(heading) {
-  const l = state.look === 'side' ? (mySide() || 'L') : state.look;
-  return l === 'F' ? heading : heading + (l === 'L' ? -90 : 90);
+// ---------- motion: smooth 60 fps camera ----------
+// GPS gives ~1 fix per second; between fixes we glide along the last heading and speed.
+const motion = { has: false, lon: 0, lat: 0, alt: 0, heading: 0, speed: 0, t: 0, dLon: 0, dLat: 0, dAlt: 0, dHeading: 0 };
+let lastFrame = 0, lastInfo = 0;
+
+function frame(now) {
+  requestAnimationFrame(frame);
+  const dt = Math.min(0.1, (now - (lastFrame || now)) / 1000);
+  lastFrame = now;
+  if (!state.route || !motion.has || !state.map) return;
+
+  let target;
+  if (state.simRunning) {
+    const total = state.route.path.total;
+    const s = simState(state.simAlong);
+    state.simAlong = Math.min(total, state.simAlong + (s.speed * state.simSpeed * dt) / 1000);
+    const n = simState(state.simAlong);
+    setMotion(n);
+    target = [n.lon, n.lat];
+    if (state.simAlong >= total) pauseSim();
+  } else {
+    const ahead = Math.min(4, (now - motion.t) / 1000);
+    target = motion.speed > 5 ? destination([motion.lon, motion.lat], motion.heading, (motion.speed * ahead) / 1000) : [motion.lon, motion.lat];
+  }
+  // ease the displayed values towards the target so nothing jumps
+  const k = state.simRunning ? 1 : Math.min(1, dt * 4);
+  motion.dLon += lonDelta(motion.dLon, target[0]) * k;
+  motion.dLat += (target[1] - motion.dLat) * k;
+  motion.dHeading += angDiff(motion.dHeading, motion.heading) * Math.min(1, dt * 1.5);
+  motion.dAlt += (motion.alt - motion.dAlt) * Math.min(1, dt * 1.2);
+  const pos = [motion.dLon, motion.dLat];
+
+  state.marker?.setLngLat(pos).setRotation(motion.dHeading);
+  applyCamera(pos, motion.dHeading, motion.dAlt);
+
+  if (now - lastInfo > 500) {
+    lastInfo = now;
+    state.live = { ...state.live, lon: pos[0], lat: pos[1], heading: motion.dHeading, speed: motion.speed, alt: motion.alt };
+    renderInfo();
+    const range = $('#sim-range');
+    if (state.simRunning && range) range.value = (state.simAlong / state.route.path.total) * 1000;
+  }
+}
+requestAnimationFrame(frame);
+const lonDelta = (a, b) => ((((b - a + 540) % 360) + 360) % 360) - 180;
+
+function setMotion(s) {
+  const first = !motion.has;
+  Object.assign(motion, { lon: s.lon, lat: s.lat, alt: s.alt ?? motion.alt, heading: s.heading, speed: s.speed ?? motion.speed, t: performance.now(), has: true });
+  if (first) Object.assign(motion, { dLon: s.lon, dLat: s.lat, dAlt: motion.alt, dHeading: s.heading });
 }
 
-function applyCamera(live, instant = false) {
+function cameraAlt(alt) {
+  return alt != null && !Number.isNaN(alt) && alt > 150 ? alt : state.live?.sim ? 400 : 10500;
+}
+
+function applyCamera(pos, heading, alt) {
   const m = state.map;
-  const pos = [live.lon, live.lat];
-  const dur = instant || live.sim ? 0 : 900;
   if (state.view === 'window') {
-    const alt = live.alt != null && !Number.isNaN(live.alt) && live.alt > 150 ? live.alt : live.sim ? 400 : 10500;
-    let cam;
-    try { cam = m.calculateCameraOptionsFromCameraLngLatAltRotation(pos, alt, lookBearing(live.heading), state.tilt); } catch { cam = null; }
-    if (cam) (dur ? m.easeTo({ ...cam, duration: dur, easing: (t) => t }) : m.jumpTo(cam));
+    const l = effLook();
+    const brg = l === 'F' ? heading : heading + (l === 'L' ? -90 : 90);
+    try { m.jumpTo(m.calculateCameraOptionsFromCameraLngLatAltRotation(pos, cameraAlt(alt), brg, state.tilt)); } catch { /* camera below terrain etc. */ }
     return;
   }
   if (!state.follow) return;
-  if (state.view === '3d') {
-    const z = Math.min(Math.max(m.getZoom(), 7.5), 11);
-    const opts = { center: pos, bearing: live.heading, pitch: 62, zoom: z };
-    dur ? m.easeTo({ ...opts, duration: dur }) : m.jumpTo(opts);
-  } else {
-    const opts = { center: pos, zoom: Math.max(m.getZoom(), 7), pitch: 0, bearing: 0 };
-    dur ? m.easeTo({ ...opts, duration: dur }) : m.jumpTo(opts);
-  }
+  if (state.view === '3d') m.jumpTo({ center: pos, bearing: heading, pitch: 62, zoom: Math.min(Math.max(m.getZoom(), 7.5), 11.5) });
+  else m.jumpTo({ center: pos, zoom: Math.max(m.getZoom(), 7), pitch: 0, bearing: 0 });
 }
 
 // ---------- live position ----------
@@ -609,26 +708,17 @@ function startSim() {
   $('#btn-sim')?.classList.add('on');
   setPill('Simulating', 'sim');
   if (!state.live?.sim) state.simAlong = Math.min(state.route.path.total * 0.12, 220);
-  update(simState(state.simAlong));
+  ingest(simState(state.simAlong), true);
   setFollow(true);
   playSim();
 }
 function playSim() {
-  pauseSim();
-  const btn = $('#btn-play'); if (btn) btn.textContent = '❚❚';
-  state.simTimer = setInterval(() => {
-    const total = state.route.path.total;
-    const s = simState(state.simAlong);
-    const speedup = state.view === 'window' ? 30 : 120; // slower in window view so it feels real
-    state.simAlong = Math.min(total, state.simAlong + (s.speed * speedup * 0.25) / 1000);
-    update(simState(state.simAlong));
-    const range = $('#sim-range'); if (range) range.value = (state.simAlong / total) * 1000;
-    if (state.simAlong >= total) pauseSim();
-  }, 250);
+  state.simRunning = true;
+  const b = $('#btn-play'); if (b) b.textContent = '❚❚';
 }
 function pauseSim() {
-  clearInterval(state.simTimer); state.simTimer = null;
-  const btn = $('#btn-play'); if (btn) btn.textContent = '▶';
+  state.simRunning = false;
+  const b = $('#btn-play'); if (b) b.textContent = '▶';
 }
 function stopSim() {
   pauseSim();
@@ -639,20 +729,20 @@ function stopSim() {
 function startGPS() {
   stopSim();
   if (!('geolocation' in navigator)) return setPill('No GPS', 'bad');
-  if (state.live?.sim) state.live = null;
+  if (state.live?.sim) { state.live = null; motion.has = false; }
   setPill('Searching…', 'wait');
-  $('#below').innerHTML = 'Looking for GPS satellites… keep the phone near the window. The first fix can take a few minutes in flight mode.';
+  const b = $('#below'); if (b) b.innerHTML = 'Looking for GPS satellites… keep the phone near the window. The first fix can take a few minutes in flight mode.';
   const btn = $('#btn-gps'); btn.textContent = 'Stop GPS'; btn.classList.add('on');
   state.watchId = navigator.geolocation.watchPosition(
     (p) => {
       const c = p.coords;
       setPill(`GPS ±${Math.round(c.accuracy)} m`, 'ok');
       const s = { lon: c.longitude, lat: c.latitude, alt: c.altitude, speed: c.speed, heading: c.heading, acc: c.accuracy };
-      update(s);
+      ingest(s);
       recordTrack(s);
     },
     (err) => {
-      if (err.code === 1) { setPill('No permission', 'bad'); $('#below').innerHTML = 'Location permission was denied. Allow location for this app in your phone settings, then try again.'; stopGPS(); }
+      if (err.code === 1) { setPill('No permission', 'bad'); const el = $('#below'); if (el) el.innerHTML = 'Location permission was denied. Allow location for this app in your phone settings, then try again.'; stopGPS(); }
       else setPill('Searching…', 'wait');
     },
     { enableHighAccuracy: true, maximumAge: 0 },
@@ -667,8 +757,10 @@ function stopGPS() {
 }
 function stopLive() {
   stopGPS(); stopSim(); releaseWake();
-  state.live = null;
+  state.live = null; motion.has = false;
   state.marker?.remove(); state.marker = null;
+  document.body.classList.remove('flying', 'ui-off', 'in-cabin');
+  $('#cabin')?.remove();
 }
 
 function recordTrack(s) {
@@ -681,70 +773,74 @@ function recordTrack(s) {
 }
 
 function setPill(text, cls) {
-  const p = $('#gps-pill'); if (!p) return;
-  p.textContent = text; p.className = `pill ${cls || ''}`;
+  const p = $('#gps-pill'); if (p) { p.textContent = text; p.className = `pill ${cls || ''}`; }
+  const d = $('#gps-dot'); if (d) d.className = `dot ${cls || ''}`;
 }
 
-function update(s) {
+// New position from GPS or the simulator.
+function ingest(s, jump = false) {
   const r = state.route;
   if (!r) return;
   const prev = state.live, now = Date.now();
   let { heading, speed } = s;
-  if (prev && !s.sim && !prev.sim) {
-    const dkm = dist([prev.lon, prev.lat], [s.lon, s.lat]);
+  if (prev && !s.sim && !prev.sim && prev.raw) {
+    const dkm = dist([prev.raw.lon, prev.raw.lat], [s.lon, s.lat]);
     const dt = (now - prev.t) / 1000;
-    if ((heading == null || Number.isNaN(heading)) && dkm > 0.15) heading = bearing([prev.lon, prev.lat], [s.lon, s.lat]);
+    if ((heading == null || Number.isNaN(heading)) && dkm > 0.15) heading = bearing([prev.raw.lon, prev.raw.lat], [s.lon, s.lat]);
     if ((speed == null || Number.isNaN(speed)) && dt > 0.5 && dkm > 0.03) speed = (dkm * 1000) / dt;
   }
-  const pos = [s.lon, s.lat];
-  const pr = project(r.path, pos);
-  if (heading == null || Number.isNaN(heading)) heading = prev?.heading ?? headingAt(r.path, pr.along);
-  const live = { ...s, heading, speed, t: now, along: pr.along };
+  if (heading == null || Number.isNaN(heading)) heading = prev?.heading ?? headingAt(r.path, project(r.path, [s.lon, s.lat]).along);
   const first = !state.live;
-  state.live = live;
-  if (first) updateWindowHint();
-
-  // marker
+  state.live = { ...s, heading, speed, t: now, raw: { lon: s.lon, lat: s.lat } };
+  if (jump || first || s.sim) { motion.has = false; }
+  setMotion({ ...s, heading, speed });
   if (!state.marker) {
     const el = document.createElement('div');
     el.className = 'plane';
     el.innerHTML = '<svg viewBox="0 0 24 24" width="38" height="38"><path fill="#ff006e" stroke="#fff" stroke-width="1.1" stroke-linejoin="round" d="M12 1.8c.8 0 1.35.95 1.35 2.1v5.3l7.85 4.6v2.05l-7.85-2.35v4.9l2.25 1.75v1.15L12 20.3l-3.6 1v-1.15l2.25-1.75v-4.9L2.8 15.85V13.8l7.85-4.6V3.9c0-1.15.55-2.1 1.35-2.1z"/></svg>';
-    state.marker = new maplibregl.Marker({ element: el, rotationAlignment: 'map', pitchAlignment: 'map' }).setLngLat(pos).addTo(state.map);
+    state.marker = new maplibregl.Marker({ element: el, rotationAlignment: 'map', pitchAlignment: 'map' }).setLngLat([s.lon, s.lat]).addTo(state.map);
     if (state.view === 'window') el.style.display = 'none';
   }
-  state.marker.setLngLat(pos).setRotation(heading);
-  applyCamera(live);
+  if (first) updateWindowHint();
+  if (first || jump) renderInfo(true);
+}
 
-  // HUD
+// Text: stats line, "below you", coming up. Runs twice a second at most.
+function renderInfo() {
+  const r = state.route, live = state.live;
+  if (!r || !live) return;
+  const pos = [live.lon, live.lat];
+  const heading = live.heading;
+  const pr = project(r.path, pos);
+  const speed = live.speed, alt = motion.dAlt || live.alt;
   const kmh = speed != null && !Number.isNaN(speed) ? speed * 3.6 : null;
   const rem = Math.max(0, r.path.total - pr.along);
   const set = (id, v) => { const el = $(id); if (el) el.textContent = v; };
-  set('#h-alt', s.alt != null && !Number.isNaN(s.alt) ? (Math.round((s.alt * 3.28084) / 100) * 100).toLocaleString() : '—');
+  set('#h-alt', alt != null && !Number.isNaN(alt) ? (Math.round((alt * 3.28084) / 100) * 100).toLocaleString() : '—');
   set('#h-spd', kmh != null ? Math.round(kmh).toLocaleString() : '—');
-  set('#h-hdg', `${Math.round(heading)}° ${cardinal(heading)}`);
+  set('#h-hdg', `${cardinal(heading)} ${Math.round(heading)}°`);
   set('#h-rem', Math.round(rem).toLocaleString());
-  if (kmh && kmh > 150) {
-    const arrive = new Date(now + (rem / kmh) * 3600000);
-    set('#h-eta', arrive.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false }));
-  } else set('#h-eta', '—');
+  set('#h-eta', kmh && kmh > 150 ? new Date(Date.now() + (rem / kmh) * 3600000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false }) : '—');
   const side = mySide();
   if (side) set('#faces', ` · window faces ${cardinal(heading + (side === 'L' ? -90 : 90))}`);
   const prog = $('#prog'); if (prog) prog.style.width = `${Math.min(100, (pr.along / r.path.total) * 100)}%`;
-  if (pr.d > 150 && !s.sim) setPill(`${Math.round(pr.d)} km off route`, 'wait');
+  if (pr.d > 150 && !live.sim) setPill(`${Math.round(pr.d)} km off route`, 'wait');
 
-  // below + upcoming
   const { near, nd } = nearestPlace(pos);
-  const below = $('#below');
-  const belowLbl = $('.below .lbl');
-  if (belowLbl) belowLbl.textContent = near && nd < 25 ? 'Below you' : 'Nearest place';
-  if (below) {
-    if (near && nd < 150) {
-      const ns = sideOf(pos, heading, [near.lon, near.lat]).side;
-      const where = nd < 4 ? 'right below you' : `${Math.round(nd)} km to your ${sideWord(ns)}`;
-      const look = side && ns === side && nd >= 4 && nd < 60 ? '<span class="look-now">Look out your window</span>' : '';
-      below.innerHTML = `<b>${esc(near.label)}</b>${near.ctry && near.kind === 'c' ? `<small>, ${esc(near.ctry)}</small>` : ''}<div class="sub">${where} ${look}</div>`;
-    } else below.innerHTML = '<b>Open country or sea</b><div class="sub">No major place within 150 km</div>';
+  let line, big;
+  if (near && nd < 150) {
+    const ns = sideOf(pos, heading, [near.lon, near.lat]).side;
+    const where = nd < 4 ? 'below you' : `${Math.round(nd)} km ${sideWord(ns)}`;
+    const look = side && ns === side && nd >= 4 && nd < 60;
+    line = `<b>${esc(near.label)}</b> <span class="muted">${where}</span>${look ? ' <span class="look-now">Look out</span>' : ''}`;
+    big = `<span class="lbl">${nd < 25 ? 'Below you' : 'Nearest place'}</span><b>${esc(near.label)}</b>${near.ctry && near.kind === 'c' ? `<small>, ${esc(near.ctry)}</small>` : ''}<div class="sub">${nd < 4 ? 'right below you' : `${Math.round(nd)} km to your ${sideWord(ns)}`}</div>`;
+  } else {
+    line = '<b>Open country</b> <span class="muted">no major place within 150 km</span>';
+    big = '<span class="lbl">Below you</span><b>Open country or sea</b>';
   }
+  const bl = $('#below-line'); if (bl) bl.innerHTML = line;
+  const bb = $('#below'); if (bb) bb.innerHTML = big;
+
   const up = r.pois
     .filter((p) => p.along > pr.along + 3 && p.name !== near?.name)
     .slice(0, 40)
@@ -778,7 +874,6 @@ function nearestPlace(pos) {
 function setFollow(on) {
   state.follow = on;
   $('#btn-follow')?.classList.toggle('on', on);
-  if (on && state.live) applyCamera(state.live, false);
 }
 
 async function requestWake() {
@@ -817,23 +912,29 @@ app.addEventListener('click', async (e) => {
     }
   } else if (a === 'install') {
     state.installEvt?.prompt(); state.installEvt = null; renderHome();
-  } else if (a === 'gps') {
+  } else if (a === 'dock') setDock(!state.dockOpen);
+  else if (a === 'gps') {
     if (state.watchId != null) { stopGPS(); setPill('GPS off'); releaseWake(); } else startGPS();
   } else if (a === 'sim') {
-    if (state.live?.sim && $('#btn-sim')?.classList.contains('on')) { stopSim(); setPill('GPS off'); } else startSim();
+    if (state.live?.sim && $('#btn-sim')?.classList.contains('on')) { stopSim(); setPill('GPS off'); } else { startSim(); if (state.view === 'window') setDock(false); }
   } else if (a === 'play') {
-    if (state.simTimer) pauseSim(); else playSim();
+    if (state.simRunning) pauseSim(); else playSim();
+  } else if (a === 'speed') {
+    state.simSpeed = +el.dataset.k;
+    document.querySelectorAll('#speeds button').forEach((b) => b.classList.toggle('on', b === el));
   } else if (a === 'follow') setFollow(!state.follow);
   else if (a === 'view') setView(el.dataset.v);
   else if (a === 'look') {
     state.look = el.dataset.l;
     document.querySelectorAll('[data-action="look"]').forEach((b) => b.classList.toggle('on', b === el));
-    if (state.live) applyCamera(state.live, true);
+    updateCabin();
+  } else if (a === 'frame') {
+    state.frame = !state.frame; el.classList.toggle('on', state.frame); updateCabin();
   } else if (a === 'night') {
     state.night = !state.night;
     el.classList.toggle('on', state.night); el.textContent = state.night ? '☾' : '☀';
-    applyNight();
-  } else if (a === 'collapse') setCollapsed(!state.collapsed);
+    applyNight(); updateCabin();
+  }
 });
 
 window.addEventListener('beforeinstallprompt', (e) => { e.preventDefault(); state.installEvt = e; if (!state.route && !state.ticket) renderHome(); });
