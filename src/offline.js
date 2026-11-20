@@ -126,17 +126,53 @@ export function fontStacks(style) {
   return [...out.values()];
 }
 
-export function buildUrlList(style, path, spots) {
-  const tiles = corridorTiles(path, PLAN, spots);
+// ---- 3D Earth style: satellite imagery + terrain heights + night lights ----
+export const SAT_URL = 'https://tiles.maps.eox.at/wmts/1.0.0/s2cloudless-2024_3857/default/g/{z}/{y}/{x}.jpg';
+export const DEM_URL = 'https://s3.amazonaws.com/elevation-tiles-prod/terrarium/{z}/{x}/{y}.png';
+export const NIGHT_URL = 'https://gibs.earthdata.nasa.gov/wmts/epsg3857/best/VIIRS_Black_Marble/default/2016-01-01/GoogleMapsCompatible_Level8/{z}/{y}/{x}.png';
+const DEM_MAX = 9;
+
+export const SKY = {
+  day: { 'sky-color': '#3f86d6', 'horizon-color': '#cfe2f6', 'fog-color': '#dbe6f2', 'sky-horizon-blend': 0.7, 'horizon-fog-blend': 0.6, 'fog-ground-blend': 0.55, 'atmosphere-blend': 0 },
+  night: { 'sky-color': '#02040b', 'horizon-color': '#0c1830', 'fog-color': '#060c1a', 'sky-horizon-blend': 0.5, 'horizon-fog-blend': 0.5, 'fog-ground-blend': 0.6, 'atmosphere-blend': 0 },
+};
+
+export function buildEarthStyle(base) {
+  return {
+    version: 8,
+    name: 'earth',
+    glyphs: base?.glyphs,
+    sources: {
+      sat: { type: 'raster', tiles: [toProto(SAT_URL)], tileSize: 256, maxzoom: MAX_Z, attribution: '<a href="https://s2maps.eu">Sentinel-2 cloudless</a> by EOX IT Services GmbH (Contains modified Copernicus Sentinel data 2024)' },
+      dem: { type: 'raster-dem', tiles: [toProto(DEM_URL)], tileSize: 256, encoding: 'terrarium', maxzoom: DEM_MAX, attribution: 'Terrain: Mapzen / AWS Terrain Tiles' },
+      night: { type: 'raster', tiles: [toProto(NIGHT_URL)], tileSize: 256, maxzoom: 8, attribution: 'Night lights: NASA Black Marble' },
+    },
+    layers: [
+      { id: 'bg', type: 'background', paint: { 'background-color': '#0d1626' } },
+      { id: 'sat', type: 'raster', source: 'sat', paint: { 'raster-fade-duration': 0 } },
+      { id: 'night', type: 'raster', source: 'night', layout: { visibility: 'none' }, paint: { 'raster-fade-duration': 0, 'raster-opacity': 0.92 } },
+    ],
+    terrain: { source: 'dem', exaggeration: 1.6 },
+    sky: SKY.day,
+  };
+}
+
+// Average bytes per tile, used only for the size estimate shown before saving.
+const AVG = { vector: 45e3, raster: 25e3, 'raster-dem': 70e3 };
+
+export function buildUrlList(style, path, spots, tiles = corridorTiles(path, PLAN, spots)) {
   const urls = [];
+  let estBytes = 0;
   for (const src of Object.values(style.sources)) {
     if (!src.tiles) continue;
     const tpl = fromProto(src.tiles[0]);
     const minz = src.minzoom ?? 0;
     const maxz = Math.min(src.maxzoom ?? 22, MAX_Z);
+    const avg = src.tiles[0].includes('Black_Marble') ? 10e3 : AVG[src.type] ?? 30e3;
     for (const [z, x, y] of tiles) {
       if (z < minz || z > maxz) continue;
       urls.push(tpl.replace('{z}', z).replace('{x}', x).replace('{y}', y));
+      estBytes += avg;
     }
   }
   const tileCount = urls.length;
@@ -150,7 +186,7 @@ export function buildUrlList(style, path, spots) {
     const b = fromProto(s);
     urls.push(`${b}.json`, `${b}.png`, `${b}@2x.json`, `${b}@2x.png`);
   }
-  return { urls: urls.map(canon), tileCount };
+  return { urls: urls.map(canon), tileCount, estBytes };
 }
 
 export async function prefetch(urls, onProgress, signal) {

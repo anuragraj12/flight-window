@@ -7,7 +7,9 @@
     "preview": "vite preview"
   },
   "dependencies": {
-    "maplibre-gl": "^6.19.0"
+    "maplibre-gl": "^6.19.0",
+    "pdfjs-dist": "^6.5.438",
+    "zxing-wasm": "^3.1.7"
   },
   "devDependencies": {
     "vite": "^8.3.8",
