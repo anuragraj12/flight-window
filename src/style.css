@@ -257,3 +257,9 @@ body.ui-off #credits { opacity: 0.35; }
 /* embedded demo (e.g. inside a portfolio page) */
 body.embed [data-action="home"] { display: none; }
 body.embed .fly-top { justify-content: center; }
+
+/* always-visible look switch in Window view */
+.look-float { position: absolute; top: calc(78px + var(--safe-t)); left: 50%; transform: translateX(-50%); width: min(300px, 86vw); max-width: none; margin: 0; z-index: 3; }
+.look-float button { padding: 7px 4px; }
+#cabin .pane { top: calc(122px + var(--safe-t)); }
+body.ui-off .look-float { display: none !important; }

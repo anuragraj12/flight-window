@@ -518,6 +518,11 @@ function renderFly() {
     <div class="stats-line" id="stats">
       <span><b id="h-alt">—</b> ft</span><span><b id="h-spd">—</b> km/h</span><span><b id="h-hdg">—</b></span><span><b id="h-rem">${Math.round(r.path.total).toLocaleString()}</b> km left</span><span>ETA <b id="h-eta">—</b></span>
     </div>
+    <div class="look-float seg mini ${state.view === 'window' ? '' : 'hidden'}" id="look-float" aria-label="Which way to look">
+      <button data-action="look" data-l="L" class="${effLook() === 'L' ? 'on' : ''}">◀ Left</button>
+      <button data-action="look" data-l="F" class="${effLook() === 'F' ? 'on' : ''}">Front</button>
+      <button data-action="look" data-l="R" class="${effLook() === 'R' ? 'on' : ''}">Right ▶</button>
+    </div>
     <div id="window-hint" class="window-hint hidden"></div>
     <div class="tap-hint">Tap to show controls</div>
     <div class="dock glass ${state.dockOpen ? 'open' : ''}" id="dock">
@@ -616,6 +621,7 @@ async function setView(v) {
   state.view = v;
   document.querySelectorAll('#views button').forEach((b) => b.classList.toggle('on', b.dataset.v === v));
   $('#look-row')?.classList.toggle('hidden', v !== 'window');
+  $('#look-float')?.classList.toggle('hidden', v !== 'window');
   if (v === 'window') setDock(false);
   await applyViewStyle();
   if (state.marker) state.marker.getElement().style.display = v === 'window' ? 'none' : '';
@@ -926,7 +932,7 @@ app.addEventListener('click', async (e) => {
   else if (a === 'view') setView(el.dataset.v);
   else if (a === 'look') {
     state.look = el.dataset.l;
-    document.querySelectorAll('[data-action="look"]').forEach((b) => b.classList.toggle('on', b === el));
+    document.querySelectorAll('[data-action="look"]').forEach((b) => b.classList.toggle('on', b.dataset.l === state.look));
     updateCabin();
   } else if (a === 'frame') {
     state.frame = !state.frame; el.classList.toggle('on', state.frame); updateCabin();
