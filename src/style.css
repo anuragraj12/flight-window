@@ -15,7 +15,7 @@
 html, body { margin: 0; height: 100%; background: var(--bg); color: var(--text); font: 15px/1.4 -apple-system, BlinkMacSystemFont, 'SF Pro Text', 'Segoe UI', Roboto, sans-serif; overflow: hidden; overscroll-behavior: none; }
 #map { position: fixed; inset: 0; }
 body.dim #map canvas { filter: brightness(0.55) saturate(0.85); }
-#app { position: fixed; inset: 0; pointer-events: none; }
+#app { position: fixed; inset: 0; pointer-events: none; z-index: 2; }
 #app > * { pointer-events: auto; }
 
 .glass { background: var(--glass); backdrop-filter: blur(14px) saturate(1.3); -webkit-backdrop-filter: blur(14px) saturate(1.3); border: 1px solid var(--line); }
@@ -237,7 +237,7 @@ body.flying .maplibregl-ctrl-bottom-right { top: calc(80px + var(--safe-t)) !imp
 #cabin.night .glass-sheen { box-shadow: inset 0 0 70px 24px rgba(0, 0, 0, 0.7); background: linear-gradient(125deg, rgba(255, 255, 255, 0.04), transparent 35%); }
 #cabin .wing { position: absolute; left: 0; right: 0; bottom: 4%; height: 66%; }
 #cabin.left .wing { transform: scaleX(-1); }
-.wing-svg { width: 100%; height: 100%; display: block; }
+.wing-svg { width: 100%; height: 100%; display: block; overflow: visible; }
 .wing-svg .w1 { stop-color: #f3f5f8; }
 .wing-svg .w2 { stop-color: #8a939e; }
 #cabin.night .wing-svg .w1 { stop-color: #3b414b; }
@@ -253,3 +253,7 @@ body.in-cabin:not(.ui-off) .maplibregl-ctrl-bottom-right { top: calc(96px + var(
 #credits { position: fixed; right: 6px; bottom: 2px; z-index: 4; max-width: 70vw; font-size: 8.5px; line-height: 1.2; color: rgba(255, 255, 255, 0.55); text-align: right; pointer-events: none; text-shadow: 0 1px 2px #000; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 body:not(.flying) #credits { color: rgba(30, 40, 60, 0.6); text-shadow: none; bottom: auto; top: calc(2px + var(--safe-t)); }
 body.ui-off #credits { opacity: 0.35; }
+
+/* embedded demo (e.g. inside a portfolio page) */
+body.embed [data-action="home"] { display: none; }
+body.embed .fly-top { justify-content: center; }

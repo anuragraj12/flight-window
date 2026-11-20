@@ -582,9 +582,9 @@ const WING = `
     <linearGradient id="wg" x1="0" y1="0" x2="0" y2="1"><stop offset="0" class="w1"/><stop offset="1" class="w2"/></linearGradient>
     <linearGradient id="wl" x1="0" y1="0" x2="1" y2="0"><stop offset="0" class="w2"/><stop offset="1" class="w1"/></linearGradient>
   </defs>
-  <path d="M-60 214 L318 150 Q330 147 334 150 L338 160 L-60 336 Z" fill="url(#wg)"/>
+  <path d="M-400 271 L318 150 Q330 147 334 150 L338 160 L-400 486 Z" fill="url(#wg)"/>
   <path d="M318 150 Q331 146 336 132 L352 46 Q354 40 359 42 L362 46 L347 152 Q344 158 336 160 Z" fill="url(#wl)"/>
-  <path d="M-60 214 L318 150" stroke="rgba(255,255,255,0.35)" stroke-width="1.2" fill="none"/>
+  <path d="M-400 271 L318 150" stroke="rgba(255,255,255,0.35)" stroke-width="1.2" fill="none"/>
   <circle class="nav" cx="350" cy="150" r="3.2"/>
   <circle class="strobe" cx="350" cy="150" r="10"/>
 </svg>`;
@@ -945,7 +945,32 @@ window.addEventListener('offline', () => { if (!state.route && !state.ticket) re
 (async () => {
   app.innerHTML = `<div class="sheet glass"><div class="note">Loading…</div></div>`;
   await Promise.all([initMap(), loadAirports()]);
-  loadPlaces().catch(() => {});
   loadAirlines().catch(() => {});
-  renderHome();
+  const qs = new URLSearchParams(location.search);
+  if (qs.has('demo')) await startDemo(qs);
+  else { loadPlaces().catch(() => {}); renderHome(); }
 })();
+
+// ?demo=DEL-BLR[&side=L|R][&night=1][&view=window|3d|map][&speed=10][&embed]
+// Replays a flight in the simulator, straight from the network, without saving anything.
+async function startDemo(qs) {
+  await loadPlaces();
+  const [a, b] = (qs.get('demo') || 'DEL-BLR').toUpperCase().split('-');
+  const from = airportByCode(a) || airportByCode('DEL');
+  const to = airportByCode(b) || airportByCode('BLR');
+  const side = (qs.get('side') || 'L').toUpperCase() === 'R' ? 'R' : 'L';
+  if (qs.has('embed')) document.body.classList.add('embed');
+  state.route = await makeRoute(from, to);
+  state.trip = { id: 'demo', from, to, total: state.route.path.total, carrier: '', flight: '', airline: '', seat: side === 'L' ? '14A' : '14F', side, earth: true };
+  state.earthStyle = state.vectorStyle ? buildEarthStyle(state.vectorStyle) : null;
+  if (qs.has('night')) state.night = qs.get('night') !== '0';
+  const v = qs.get('view');
+  state.view = state.earthStyle ? (['map', '3d', 'window'].includes(v) ? v : 'window') : 'map';
+  state.simSpeed = [1, 10, 60].includes(+qs.get('speed')) ? +qs.get('speed') : 10;
+  await applyViewStyle();
+  refreshOverlayData();
+  renderFly();
+  startSim();
+  state.simAlong = state.route.path.total * (Math.min(90, Math.max(0, +(qs.get('at') ?? 30))) / 100);
+  ingest(simState(state.simAlong), true);
+}
