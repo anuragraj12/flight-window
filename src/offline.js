@@ -166,7 +166,7 @@ export const SAT_URL = 'https://tiles.maps.eox.at/wmts/1.0.0/s2cloudless-2024_38
 export const DEM_URL = 'https://s3.amazonaws.com/elevation-tiles-prod/terrarium/{z}/{x}/{y}.png';
 export const NIGHT_URL = 'https://gibs.earthdata.nasa.gov/wmts/epsg3857/best/VIIRS_Black_Marble/default/2016-01-01/GoogleMapsCompatible_Level8/{z}/{y}/{x}.png';
 const DEM_MAX = 9;
-const SAT_MAX = 13; // ~19 m/pixel: sharp enough for the window view near the route
+const SAT_MAX = 14; // z13 along the route, z14 (~10 m/pixel, the imagery's full detail) around airports
 // Extra-detail satellite strip either side of the route, on top of PLAN.
 export const HI_PLAN = [
   { zmin: 12, zmax: 12, km: 32 },
@@ -180,29 +180,42 @@ export const SKY = {
 
 // Night city lights drawn from the map data: glowing roads, warm towns, black water.
 export const NIGHT_LAYERS = ['n-water', 'n-urban', 'n-glow', 'n-road-minor', 'n-road-mid', 'n-road-major-glow', 'n-road-major'];
-function nightLightLayers() {
-  const v = { source: 'omt', layout: { visibility: 'none' } };
+function nightLightLayers(source = 'omt', suffix = '', minzoom = 0) {
+  const v = { source, minzoom, layout: { visibility: 'none' } };
   const cls = (list) => ['in', ['get', 'class'], ['literal', list]];
   const w = (a, b, c) => ['interpolate', ['exponential', 1.6], ['zoom'], 6, a, 10, b, 14, c];
   return [
-    { id: 'n-water', type: 'fill', ...v, 'source-layer': 'water', paint: { 'fill-color': '#000000', 'fill-opacity': 0.9 } },
-    { id: 'n-urban', type: 'fill', ...v, 'source-layer': 'landuse', filter: cls(['residential', 'commercial', 'industrial', 'retail']), paint: { 'fill-color': '#4a2f0c', 'fill-opacity': 0.55 } },
+    { id: `n-water${suffix}`, type: 'fill', ...v, 'source-layer': 'water', paint: { 'fill-color': '#000000', 'fill-opacity': 0.9 } },
+    { id: `n-urban${suffix}`, type: 'fill', ...v, 'source-layer': 'landuse', filter: cls(['residential', 'commercial', 'industrial', 'retail']), paint: { 'fill-color': '#4a2f0c', 'fill-opacity': 0.55 } },
     {
-      id: 'n-glow', type: 'circle', ...v, 'source-layer': 'place', filter: cls(['city', 'town']),
+      id: `n-glow${suffix}`, type: 'circle', ...v, 'source-layer': 'place', filter: cls(['city', 'town']),
       paint: {
         'circle-radius': ['interpolate', ['linear'], ['zoom'], 5, ['match', ['get', 'class'], 'city', 9, 3], 10, ['match', ['get', 'class'], 'city', 70, 22]],
         'circle-color': '#ffb457', 'circle-blur': 1, 'circle-opacity': 0.4, 'circle-pitch-alignment': 'map',
       },
     },
-    { id: 'n-road-minor', type: 'line', ...v, 'source-layer': 'transportation', filter: cls(['tertiary', 'minor', 'service']), paint: { 'line-color': '#ffe9b8', 'line-width': w(0.15, 0.5, 1.6), 'line-opacity': 0.6, 'line-blur': 0.4 } },
-    { id: 'n-road-mid', type: 'line', ...v, 'source-layer': 'transportation', filter: cls(['primary', 'secondary']), paint: { 'line-color': '#ffc56e', 'line-width': w(0.3, 1.1, 3), 'line-opacity': 0.9, 'line-blur': 0.6 } },
-    { id: 'n-road-major-glow', type: 'line', ...v, 'source-layer': 'transportation', filter: cls(['motorway', 'trunk']), paint: { 'line-color': '#ff8a2a', 'line-width': w(1.5, 5, 12), 'line-opacity': 0.55, 'line-blur': 4 } },
-    { id: 'n-road-major', type: 'line', ...v, 'source-layer': 'transportation', filter: cls(['motorway', 'trunk']), paint: { 'line-color': '#ffd79a', 'line-width': w(0.4, 1.3, 3), 'line-opacity': 1 } },
+    { id: `n-road-minor${suffix}`, type: 'line', ...v, 'source-layer': 'transportation', filter: cls(['tertiary', 'minor', 'service']), paint: { 'line-color': '#ffe9b8', 'line-width': w(0.15, 0.5, 1.6), 'line-opacity': 0.6, 'line-blur': 0.4 } },
+    { id: `n-road-mid${suffix}`, type: 'line', ...v, 'source-layer': 'transportation', filter: cls(['primary', 'secondary']), paint: { 'line-color': '#ffc56e', 'line-width': w(0.3, 1.1, 3), 'line-opacity': 0.9, 'line-blur': 0.6 } },
+    { id: `n-road-major-glow${suffix}`, type: 'line', ...v, 'source-layer': 'transportation', filter: cls(['motorway', 'trunk']), paint: { 'line-color': '#ff8a2a', 'line-width': w(1.5, 5, 12), 'line-opacity': 0.55, 'line-blur': 4 } },
+    { id: `n-road-major${suffix}`, type: 'line', ...v, 'source-layer': 'transportation', filter: cls(['motorway', 'trunk']), paint: { 'line-color': '#ffd79a', 'line-width': w(0.4, 1.3, 3), 'line-opacity': 1 } },
+    ...(suffix ? [{ id: `n-bld${suffix}`, type: 'fill', ...v, 'source-layer': 'building', paint: { 'fill-color': '#ffcf87', 'fill-opacity': 0.22 } }] : []),
   ];
 }
 
-export function buildEarthStyle(base) {
+// Box ±km around a point, for extra street detail near airports (take-off and landing).
+export function areaAround(lon, lat, km = 16) {
+  const dLat = km / 110.574, dLon = km / (111.32 * Math.cos((lat * Math.PI) / 180));
+  return [lon - dLon, lat - dLat, lon + dLon, lat + dLat];
+}
+
+export function buildEarthStyle(base, hiAreas = []) {
   const vec = base && Object.values(base.sources || {}).find((s) => s.type === 'vector' && s.tiles);
+  const hiSources = {}, hiLayers = [];
+  if (vec) hiAreas.forEach((b, i) => {
+    const id = `omt-hi-${i}`;
+    hiSources[id] = { type: 'vector', tiles: vec.tiles, minzoom: 12, maxzoom: 13, bounds: b };
+    hiLayers.push(...nightLightLayers(id, `-hi${i}`, 11.5));
+  });
   return {
     version: 8,
     name: 'earth',
@@ -212,16 +225,26 @@ export function buildEarthStyle(base) {
       dem: { type: 'raster-dem', tiles: [toProto(DEM_URL)], tileSize: 256, encoding: 'terrarium', maxzoom: DEM_MAX, attribution: 'Terrain: Mapzen / AWS Terrain Tiles' },
       night: { type: 'raster', tiles: [toProto(NIGHT_URL)], tileSize: 256, maxzoom: 8, attribution: 'Night lights: NASA Black Marble' },
       ...(vec ? { omt: { type: 'vector', tiles: vec.tiles, minzoom: vec.minzoom ?? 0, maxzoom: vec.maxzoom ?? MAX_Z, attribution: vec.attribution } } : {}),
+      ...hiSources,
     },
     layers: [
       { id: 'bg', type: 'background', paint: { 'background-color': '#56604a' } },
       { id: 'sat', type: 'raster', source: 'sat', paint: { 'raster-fade-duration': 0, 'raster-contrast': 0.12, 'raster-saturation': 0.12 } },
       { id: 'night', type: 'raster', source: 'night', layout: { visibility: 'none' }, paint: { 'raster-fade-duration': 0, 'raster-opacity': 0.55 } },
       ...(vec ? nightLightLayers() : []),
+      ...hiLayers,
     ],
     terrain: { source: 'dem', exaggeration: 1.6 },
     sky: SKY.day,
   };
+}
+
+function tileInBounds(z, x, y, [w, s, e, n]) {
+  const k = 2 ** z;
+  const tw = (x / k) * 360 - 180, te = ((x + 1) / k) * 360 - 180;
+  const lat = (t) => (Math.atan(Math.sinh(Math.PI * (1 - (2 * t) / k))) * 180) / Math.PI;
+  const tn = lat(y), ts = lat(y + 1);
+  return te >= w && tw <= e && tn >= s && ts <= n;
 }
 
 // Average bytes per tile, used only for the size estimate shown before saving.
@@ -236,8 +259,10 @@ export function buildUrlList(style, path, spots, tiles = corridorTiles(path, PLA
     const minz = src.minzoom ?? 0;
     const maxz = src.maxzoom ?? MAX_Z;
     const avg = src.tiles[0].includes('Black_Marble') ? 10e3 : AVG[src.type] ?? 30e3;
+    const bb = src.bounds;
     for (const [z, x, y] of tiles) {
       if (z < minz || z > maxz) continue;
+      if (bb && !tileInBounds(z, x, y, bb)) continue;
       urls.push(tpl.replace('{z}', z).replace('{x}', x).replace('{y}', y));
       estBytes += avg;
     }
@@ -287,6 +312,8 @@ export async function prefetch(urls, onProgress, signal) {
   await Promise.all(Array.from({ length: 8 }, worker));
   return { done, bytes, failed };
 }
+
+export const openTileCache = () => openTiles();
 
 export async function clearAll() {
   await caches.delete(TILE_CACHE);

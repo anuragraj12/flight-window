@@ -263,3 +263,20 @@ body.embed .fly-top { justify-content: center; }
 .look-float button { padding: 7px 4px; }
 #cabin .pane { top: calc(122px + var(--safe-t)); }
 body.ui-off .look-float { display: none !important; }
+
+/* ---- v4: route highlights, alerts ---- */
+.highlights { margin-top: 10px; }
+.highlights .chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.highlights .chips span { font-size: 12.5px; padding: 5px 9px; border-radius: 99px; background: rgba(255, 255, 255, 0.07); border: 1px solid var(--line); }
+.highlights small { display: block; color: var(--muted); font-size: 11.5px; margin-top: 6px; }
+.up.ev .badge.ev { background: rgba(255, 255, 255, 0.08); font-size: 15px; padding: 1px 0; }
+.up-name small { display: block; color: var(--muted); font-size: 11.5px; }
+.toast { position: absolute; left: 50%; top: calc(124px + var(--safe-t)); transform: translate(-50%, -16px); opacity: 0; pointer-events: none; z-index: 4;
+  display: flex; gap: 12px; align-items: center; padding: 12px 16px; border-radius: 16px; min-width: min(320px, 88vw); max-width: 92vw;
+  background: linear-gradient(135deg, rgba(14, 40, 70, 0.92), rgba(40, 20, 70, 0.92)); border: 1px solid rgba(124, 200, 255, 0.4);
+  box-shadow: 0 16px 40px rgba(0, 0, 0, 0.45); transition: opacity 0.35s, transform 0.35s; backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px); }
+.toast.show { opacity: 1; transform: translate(-50%, 0); }
+.toast .t-ico { font-size: 28px; }
+.toast b { display: block; font-size: 15.5px; }
+.toast small { color: #bcd3ee; font-size: 12.5px; }
+body.ui-off .toast { top: calc(20px + var(--safe-t)); }

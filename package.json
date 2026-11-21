@@ -7,7 +7,9 @@
     "preview": "vite preview"
   },
   "dependencies": {
+    "@mapbox/vector-tile": "^3.0.0",
     "maplibre-gl": "^6.19.0",
+    "pbf": "^5.2.0",
     "pdfjs-dist": "^6.5.438",
     "zxing-wasm": "^3.1.7"
   },

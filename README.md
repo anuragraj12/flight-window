@@ -10,6 +10,7 @@ Save your flight before you board (e.g. BLR → DEL). The app downloads the map 
 - **Scan your boarding pass** (photo, screenshot or PDF): reads the IATA barcode on the phone to get airline, flight, route, date and seat, then works out your window side
 - **3D views**: satellite imagery on real terrain, a chase camera, and a **Window view** that puts the camera at your seat, at your GPS altitude, looking out your side of the plane, framed by a cabin window and wing with blinking nav and strobe lights
 - **Night mode**: glowing road networks, warm city light and black rivers drawn from OpenStreetMap data, like the view on a night flight
+- **What you're flying over**: rivers you cross, national parks, tiger and biosphere reserves, mountain ranges and plateaus, state borders and the Tropic of Cancer, with a heads-up about a minute before each one
 - Smooth 60 fps camera that glides between GPS fixes; real-time simulator (1×, 10×, 60×); tap the screen to hide all controls
 
 ## How it works
@@ -33,4 +34,4 @@ Deploy: import the repo into Vercel (Vite preset, no settings needed).
 
 ## Data & credits
 
-Map data © OpenStreetMap contributors, tiles by OpenFreeMap / OpenMapTiles. Airports from OurAirports (public domain). Airlines from OpenFlights (ODbL). Places from Natural Earth (public domain). Satellite imagery: Sentinel-2 cloudless – https://s2maps.eu by EOX IT Services GmbH (contains modified Copernicus Sentinel data 2024), free for non-commercial use with attribution. Terrain: Mapzen / AWS Terrain Tiles. Night lights: NASA Black Marble.
+Map data © OpenStreetMap contributors, tiles by OpenFreeMap / OpenMapTiles. Airports from OurAirports (public domain). Airlines from OpenFlights (ODbL). Places, rivers, lakes, regions and states from Natural Earth (public domain). Satellite imagery: Sentinel-2 cloudless – https://s2maps.eu by EOX IT Services GmbH (contains modified Copernicus Sentinel data 2024), free for non-commercial use with attribution. Terrain: Mapzen / AWS Terrain Tiles. Night lights: NASA Black Marble.

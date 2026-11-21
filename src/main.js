@@ -6,8 +6,9 @@ import { registerSW } from 'virtual:pwa-register';
 import { dist, bearing, greatCircle, buildPath, pointAt, headingAt, project, sideOf, corridorTiles, destination, angDiff } from './geo.js';
 import {
   registerProtocol, getStyle, buildStyle, buildEarthStyle, saveStyle, loadSavedStyle,
-  buildUrlList, prefetch, clearAll, fontStacks, MAX_Z, PLAN, HI_PLAN, SKY, NIGHT_LAYERS,
+  buildUrlList, prefetch, clearAll, fontStacks, MAX_Z, PLAN, HI_PLAN, SKY, areaAround, openTileCache,
 } from './offline.js';
+import { extractTileFeatures, buildEvents, eventTitle, eventSub, summary, overlayData, ICON, inPolys } from './features.js';
 import { readTicket, seatInfo } from './boarding.js';
 
 maplibregl.setWorkerUrl(workerUrl);
@@ -39,6 +40,8 @@ const state = {
   vectorStyle: null, earthStyle: null, styleName: null,
   wake: null, marker: null, track: [], installEvt: null, ticket: null,
   dockOpen: false, frame: true, simSpeed: 1, simRunning: false,
+  events: [], feats: [], featData: null, alerted: new Set(), zoomBias: 0, userZooming: false,
+  gpsWanted: false, lastFix: null, geo: null,
 };
 
 function loadTrips() { try { return JSON.parse(localStorage.getItem('fw-trips') || '[]'); } catch { return []; } }
@@ -49,6 +52,12 @@ const airportByCode = (c) => { const a = state.airports?.find((x) => x[0] === c)
 async function loadJSON(u) { return (await fetch(u)).json(); }
 async function loadAirports() { state.airports ??= await loadJSON('/data/airports.json'); return state.airports; }
 async function loadPlaces() { state.places ??= await loadJSON('/data/places.json'); return state.places; }
+async function loadGeo() { state.geo ??= await loadJSON('/data/geo.json'); return state.geo; }
+const hiAreasFor = (a, b) => [areaAround(a.lon, a.lat), areaAround(b.lon, b.lat)];
+const routeSpots = (from, to) => {
+  const spots = [[from.lon, from.lat, 25, MAX_Z], [to.lon, to.lat, 25, MAX_Z]];
+  return { spots, all: [...spots, ...spots.map(([x, y]) => [x, y, 16, 13]), ...spots.map(([x, y]) => [x, y, 10, 14])] };
+};
 async function loadAirlines() { state.airlines ??= await loadJSON('/data/airlines.json'); return state.airlines; }
 
 function searchAirports(q) {
@@ -139,6 +148,12 @@ async function initMap() {
   // small always-visible credits line, built from the current style's sources
   state.map.on('styledata', updateCredits);
   state.map.on('error', (e) => { if (!/Not available offline/.test(e?.error?.message || '')) console.warn(e?.error || e); });
+  state.map.on('zoomstart', (e) => { if (e.originalEvent) state.userZooming = true; });
+  state.map.on('zoomend', () => {
+    if (!state.userZooming) return;
+    state.userZooming = false;
+    if (state.live) state.zoomBias = Math.max(-5, Math.min(4, state.map.getZoom() - baseZoom(motion.dAlt || state.live.alt)));
+  });
   state.map.on('dragstart', () => { if (state.live && state.follow && state.view !== 'window') setFollow(false); });
   document.addEventListener('click', (e) => { if (document.body.classList.contains('ui-off') && e.target.closest('#cabin, .tap-hint')) document.body.classList.remove('ui-off'); });
   await new Promise((r) => state.map.once('load', r));
@@ -173,8 +188,13 @@ function labelFont() {
 function addOverlays() {
   const m = state.map;
   const earth = state.styleName === 'earth';
-  for (const id of ['route', 'pois', 'track']) if (!m.getSource(id)) m.addSource(id, { type: 'geojson', data: emptyFC() });
+  for (const id of ['route', 'pois', 'track', 'feat']) if (!m.getSource(id)) m.addSource(id, { type: 'geojson', data: emptyFC() });
   const add = (layer) => { if (!m.getLayer(layer.id)) m.addLayer(layer); };
+  const isK = (k) => ['==', ['get', 'kind'], k];
+  add({ id: 'feat-park', type: 'fill', source: 'feat', filter: isK('p'), paint: { 'fill-color': '#3ddc97', 'fill-opacity': earth ? 0.16 : 0.22, 'fill-antialias': false } });
+  add({ id: 'feat-river-glow', type: 'line', source: 'feat', filter: isK('r'), layout: { 'line-cap': 'round', 'line-join': 'round' }, paint: { 'line-color': '#4cc9f0', 'line-width': ['interpolate', ['linear'], ['zoom'], 5, 3, 10, 9], 'line-opacity': 0.35, 'line-blur': 3 } });
+  add({ id: 'feat-river', type: 'line', source: 'feat', filter: isK('r'), layout: { 'line-cap': 'round', 'line-join': 'round' }, paint: { 'line-color': earth ? '#a5ecff' : '#1d8fd0', 'line-width': ['interpolate', ['linear'], ['zoom'], 5, 0.8, 10, 2.2] } });
+  if (earth) { try { m.setSourceTileLodParams(4, 6); } catch { /* older engine */ } }
   add({ id: 'route-glow', type: 'line', source: 'route', layout: { 'line-cap': 'round' }, paint: { 'line-color': '#4cc9f0', 'line-width': 9, 'line-opacity': earth ? 0.22 : 0.3, 'line-blur': 4 } });
   add({ id: 'route-line', type: 'line', source: 'route', paint: { 'line-color': earth ? '#9be7ff' : '#0a5f86', 'line-width': 2.2, 'line-dasharray': [2, 1.5], 'line-opacity': earth ? 0.8 : 1 } });
   add({ id: 'track-line', type: 'line', source: 'track', layout: { 'line-cap': 'round', 'line-join': 'round' }, paint: { 'line-color': '#ff006e', 'line-width': 3.5 } });
@@ -201,6 +221,16 @@ function addOverlays() {
         : { 'text-color': '#0b1220', 'text-halo-color': ['match', ['get', 'side'], 'L', '#ffe7a0', '#cdf2ff'], 'text-halo-width': 2 },
     });
   }
+  if (m.getStyle().glyphs) {
+    add({
+      id: 'feat-label', type: 'symbol', source: 'feat',
+      layout: {
+        'text-field': ['get', 'name'], 'text-font': labelFont(), 'text-size': 12,
+        'symbol-placement': ['match', ['get', 'kind'], 'r', 'line', 'point'], 'text-max-angle': 30, 'symbol-spacing': 420, 'text-optional': true,
+      },
+      paint: { 'text-color': ['match', ['get', 'kind'], 'p', '#b9ffd9', '#cdf6ff'], 'text-halo-color': 'rgba(4,12,24,0.85)', 'text-halo-width': 1.5 },
+    });
+  }
   if (earth) applyNight();
   refreshOverlayData();
 }
@@ -217,6 +247,7 @@ function refreshOverlayData() {
       properties: { label: p.label, kind: p.kind, side: p.side, rank: p.rank },
     })),
   });
+  m.getSource('feat')?.setData(r && state.featData ? state.featData : emptyFC());
   m.getSource('track').setData(state.track.length > 1 ? { type: 'Feature', geometry: { type: 'LineString', coordinates: state.track } } : emptyFC());
 }
 
@@ -234,7 +265,7 @@ function applyNight() {
   if (state.styleName !== 'earth' || !m.getLayer('sat')) return;
   const vis = state.night ? 'visible' : 'none';
   m.setLayoutProperty('night', 'visibility', vis);
-  for (const id of NIGHT_LAYERS) if (m.getLayer(id)) m.setLayoutProperty(id, 'visibility', vis);
+  for (const l of m.getStyle().layers) if (l.id.startsWith('n-')) m.setLayoutProperty(l.id, 'visibility', vis);
   m.setPaintProperty('sat', 'raster-brightness-max', state.night ? 0.07 : 1);
   m.setPaintProperty('sat', 'raster-saturation', state.night ? -0.7 : 0.12);
   m.setPaintProperty('sat', 'raster-contrast', state.night ? 0 : 0.12);
@@ -406,11 +437,16 @@ async function preview(from, to, meta) {
   const s = route.sides;
   const best = Math.abs(s.L - s.R) < 1.5 ? null : s.L > s.R ? 'L' : 'R';
   const si = seatInfo(meta.seat);
-  const spots = [[from.lon, from.lat, 25, MAX_Z], [to.lon, to.lat, 25, MAX_Z]];
-  const hiSpots = spots.map(([x, y]) => [x, y, 15, 13]);
-  const tiles = corridorTiles(route.path, [...PLAN, ...HI_PLAN], [...spots, ...hiSpots]);
+  const { spots, all } = routeSpots(from, to);
+  const tiles = corridorTiles(route.path, [...PLAN, ...HI_PLAN], all);
   const vec = state.vectorStyle ? buildUrlList(state.vectorStyle, route.path, spots, tiles) : { estBytes: 0 };
-  const earth = buildUrlList(buildEarthStyle(state.vectorStyle), route.path, spots, tiles, { skipVector: true });
+  const earth = buildUrlList(buildEarthStyle(state.vectorStyle, hiAreasFor(from, to)), route.path, spots, tiles, { skipVector: true });
+  let onRoute = '';
+  try {
+    const ev = buildEvents(route.path, await loadGeo());
+    if (seq !== previewSeq) return;
+    onRoute = highlightsHtml(summary(ev), ev);
+  } catch (e) { console.warn(e); }
   let seatMsg;
   if (si && si.side !== 'C') {
     const mine = si.side === 'L' ? s.nL : s.nR;
@@ -430,6 +466,7 @@ async function preview(from, to, meta) {
       <div class="seat-side R ${best === 'R' ? 'best' : ''} ${si?.side === 'R' ? 'mine' : ''}"><b>Right side</b><span>${s.nR} places${si?.side === 'R' ? ' · you' : ''}</span></div>
     </div>
     ${seatMsg}
+    ${onRoute}
     <label class="check"><input type="checkbox" id="opt-earth" checked><span><b>3D satellite & window view</b><small>Sharp satellite ground, terrain and glowing night city lights · +${fmtMB(earth.estBytes)}</small></span></label>
     <button class="primary wide" id="btn-save">Save for offline · ~<span id="size">${fmtMB(vec.estBytes + earth.estBytes)}</span></button>
     <div id="save-progress"></div>`;
@@ -443,28 +480,35 @@ async function saveTrip(route, meta, withEarth) {
   try {
     await navigator.serviceWorker?.ready;
     const style = await buildStyle();
-    const spots = [[route.from.lon, route.from.lat, 25, MAX_Z], [route.to.lon, route.to.lat, 25, MAX_Z]];
-    const hiSpots = spots.map(([x, y]) => [x, y, 15, 13]);
-    const tiles = corridorTiles(route.path, [...PLAN, ...HI_PLAN], [...spots, ...hiSpots]);
+    const { spots, all } = routeSpots(route.from, route.to);
+    const tiles = corridorTiles(route.path, [...PLAN, ...HI_PLAN], all);
     const urls = new Set(buildUrlList(style, route.path, spots, tiles).urls);
-    const earthStyle = withEarth ? buildEarthStyle(style) : null;
+    const earthStyle = withEarth ? buildEarthStyle(style, hiAreasFor(route.from, route.to)) : null;
     if (earthStyle) buildUrlList(earthStyle, route.path, spots, tiles).urls.forEach((u) => urls.add(u));
     const id = `${route.from.code}-${route.to.code}-${Date.now().toString(36)}`;
     await saveStyle(id, style);
     if (earthStyle) await saveStyle(`${id}-earth`, earthStyle);
-    await Promise.all(['/data/places.json', '/data/airports.json', '/data/airlines.json'].map((u) => fetch(u).catch(() => {})));
+    await Promise.all(['/data/places.json', '/data/airports.json', '/data/airlines.json', '/data/geo.json'].map((u) => fetch(u).catch(() => {})));
     const list = [...urls];
     box.innerHTML = `<div class="bar"><div id="bar-fill"></div></div><div class="note" id="bar-text">Downloading maps… 0 / ${list.length}</div>`;
     const res = await prefetch(list, ({ done, total, bytes }) => {
       $('#bar-fill').style.width = `${(done / total) * 100}%`;
       $('#bar-text').textContent = `Downloading maps… ${done} / ${total} · ${fmtMB(bytes)}`;
     });
+    $('#bar-text').textContent = 'Finding rivers, national parks and reserves on your route…';
+    try {
+      const vtpl = Object.values(style.sources).find((x) => x.type === 'vector' && x.tiles)?.tiles[0].replace(/^fwc:\/\//, 'https://');
+      const prefix = vtpl ? new URL(vtpl.split('{z}')[0]).href : null;
+      const z10 = prefix ? list.filter((u) => u.startsWith(prefix) && /\/10\/\d+\/\d+\.pbf$/.test(u)) : [];
+      const osm = await extractTileFeatures(z10, await openTileCache());
+      await saveStyle(`${id}-feat`, osm);
+    } catch (e) { console.warn('feature extraction failed', e); }
     const si = seatInfo(meta.seat);
     const trip = {
       id, from: route.from, to: route.to, total: route.path.total,
       carrier: meta.carrier || '', flight: meta.flight || '', airline: meta.airline || (meta.carrier && state.airlines?.[meta.carrier]) || '',
       seat: meta.seat || '', side: si && si.side !== 'C' ? si.side : '', date: meta.date || null,
-      files: list.length, bytes: res.bytes, failed: res.failed, earth: !!earthStyle, createdAt: Date.now(),
+      files: list.length, bytes: res.bytes, failed: res.failed, earth: !!earthStyle, hi: true, createdAt: Date.now(),
     };
     state.trips = [trip, ...state.trips.filter((t) => !(t.from.code === trip.from.code && t.to.code === trip.to.code))];
     saveTrips();
@@ -486,9 +530,10 @@ async function openTrip(id) {
   const vs = await loadSavedStyle(trip.id);
   if (vs) state.vectorStyle = vs;
   // Built fresh from the trip's own map style so its night-light layers use tiles already saved.
-  state.earthStyle = trip.earth ? buildEarthStyle(state.vectorStyle) : null;
+  state.earthStyle = trip.earth ? buildEarthStyle(state.vectorStyle, trip.hi ? hiAreasFor(trip.from, trip.to) : []) : null;
   state.trip = trip;
   state.route = await makeRoute(trip.from, trip.to);
+  await loadTripFeatures(trip.id);
   try { state.track = JSON.parse(localStorage.getItem(`fw-track-${trip.id}`) || '[]'); } catch { state.track = []; }
   state.view = state.earthStyle ? '3d' : 'map';
   state.dockOpen = false;
@@ -496,6 +541,29 @@ async function openTrip(id) {
   refreshOverlayData();
   renderFly();
   fitRoute(160, state.view === 'map' ? 0 : 50);
+}
+
+async function loadTripFeatures(id) {
+  state.alerted = new Set();
+  try {
+    const [geo, osm] = await Promise.all([loadGeo(), id ? loadSavedStyle(`${id}-feat`) : null]);
+    const feats = [...geo, ...(osm || [])];
+    state.events = buildEvents(state.route.path, feats);
+    state.featData = overlayData(feats, state.events);
+  } catch (e) { console.warn(e); state.events = []; state.featData = null; }
+}
+
+function highlightsHtml(c, events) {
+  const bits = [];
+  if (c.r) bits.push(`🌊 ${c.r} river${c.r > 1 ? 's' : ''}`);
+  if (c.p) bits.push(`🌳 ${c.p} park${c.p > 1 ? 's' : ''} & reserve${c.p > 1 ? 's' : ''}`);
+  if (c.g) bits.push(`⛰️ ${c.g} range${c.g > 1 ? 's' : ''} & plateau${c.g > 1 ? 's' : ''}`);
+  if (c.s) bits.push(`📍 ${c.s} state${c.s > 1 ? 's' : ''}`);
+  if (c.l) bits.push(`💧 ${c.l} lake${c.l > 1 ? 's' : ''}`);
+  const lines = [...new Set(events.filter((e) => e.type === 't').map((e) => e.name))];
+  lines.forEach((n) => bits.push(`🌐 ${n}`));
+  if (!bits.length) return '';
+  return `<div class="highlights"><span class="lbl">On this route</span><div class="chips">${bits.map((b) => `<span>${esc(b)}</span>`).join('')}</div>${state.trip ? '' : '<small>National parks and reserves are found when you save.</small>'}</div>`;
 }
 
 function mySide() { return state.trip?.side || ''; }
@@ -524,6 +592,7 @@ function renderFly() {
       <button data-action="look" data-l="R" class="${effLook() === 'R' ? 'on' : ''}">Right ▶</button>
     </div>
     <div id="window-hint" class="window-hint hidden"></div>
+    <div id="toast" class="toast" aria-live="polite"></div>
     <div class="tap-hint">Tap to show controls</div>
     <div class="dock glass ${state.dockOpen ? 'open' : ''}" id="dock">
       <div class="dock-row" data-action="dock">
@@ -536,6 +605,7 @@ function renderFly() {
         <div class="dock-sub"><span id="gps-pill" class="pill">GPS off</span><span id="seat-line">${t.seat ? `Seat ${esc(t.seat)}${mySide() ? ` · ${sideWord(mySide())} side` : ''}<span id="faces"></span>` : ''}</span></div>
         <div id="below" class="below-big"></div>
         <div id="upcoming" class="upcoming"></div>
+        ${state.events.length ? highlightsHtml(summary(state.events), state.events) : ''}
         <div id="look-row" class="look-row ${state.view === 'window' ? '' : 'hidden'}">
           <div class="seg small">
             <button data-action="look" data-l="L" class="${effLook() === 'L' ? 'on' : ''}">Left</button>
@@ -546,7 +616,7 @@ function renderFly() {
           <button class="ibtn small ${state.frame ? 'on' : ''}" data-action="frame" title="Window frame">▢</button>
         </div>
         <div class="controls">
-          <button class="primary" data-action="gps" id="btn-gps">Start GPS</button>
+          <button class="primary ${state.gpsWanted ? 'on' : ''}" data-action="gps" id="btn-gps">${state.gpsWanted ? 'Stop GPS' : 'Start GPS'}</button>
           <button data-action="sim" id="btn-sim">Simulate</button>
           <button class="icon ${state.follow ? 'on' : ''}" data-action="follow" id="btn-follow" title="Follow plane">⌖</button>
         </div>
@@ -564,6 +634,10 @@ function renderFly() {
   $('#tilt').addEventListener('input', (e) => { state.tilt = +e.target.value; });
   updateWindowHint();
   updateCabin();
+  if (state.gpsWanted) {
+    setPill(state.lastFix && Date.now() - state.lastFix.t < 30000 ? 'GPS on' : 'Searching…', state.lastFix ? 'ok' : 'wait');
+    if (state.lastFix && Date.now() - state.lastFix.t < 120000) ingest(state.lastFix.s, true);
+  }
   if (state.live) renderInfo(true);
 }
 
@@ -696,8 +770,16 @@ function applyCamera(pos, heading, alt) {
     return;
   }
   if (!state.follow) return;
-  if (state.view === '3d') m.jumpTo({ center: pos, bearing: heading, pitch: 62, zoom: Math.min(Math.max(m.getZoom(), 7.5), 11.5) });
-  else m.jumpTo({ center: pos, zoom: Math.max(m.getZoom(), 7), pitch: 0, bearing: 0 });
+  const zoom = state.userZooming ? m.getZoom() : baseZoom(alt) + state.zoomBias;
+  if (state.view === '3d') m.jumpTo({ center: pos, bearing: heading, pitch: 64, zoom });
+  else m.jumpTo({ center: pos, zoom, pitch: 0, bearing: 0 });
+}
+
+// Follow zoom from altitude: close in near the ground, wider at cruise (≈9.6 at 36,000 ft).
+function baseZoom(alt) {
+  const a = Math.max(300, alt != null && !Number.isNaN(alt) && alt > 0 ? alt : 10500);
+  const z = 13.6 - Math.log2(a / 700) + (state.view === '3d' ? 0.7 : 0);
+  return Math.min(13.8, Math.max(8, z));
 }
 
 // ---------- live position ----------
@@ -736,33 +818,60 @@ function startGPS() {
   stopSim();
   if (!('geolocation' in navigator)) return setPill('No GPS', 'bad');
   if (state.live?.sim) { state.live = null; motion.has = false; }
+  state.gpsWanted = true;
   setPill('Searching…', 'wait');
-  const b = $('#below'); if (b) b.innerHTML = 'Looking for GPS satellites… keep the phone near the window. The first fix can take a few minutes in flight mode.';
-  const btn = $('#btn-gps'); btn.textContent = 'Stop GPS'; btn.classList.add('on');
-  state.watchId = navigator.geolocation.watchPosition(
-    (p) => {
-      const c = p.coords;
-      setPill(`GPS ±${Math.round(c.accuracy)} m`, 'ok');
-      const s = { lon: c.longitude, lat: c.latitude, alt: c.altitude, speed: c.speed, heading: c.heading, acc: c.accuracy };
-      ingest(s);
-      recordTrack(s);
-    },
-    (err) => {
-      if (err.code === 1) { setPill('No permission', 'bad'); const el = $('#below'); if (el) el.innerHTML = 'Location permission was denied. Allow location for this app in your phone settings, then try again.'; stopGPS(); }
-      else setPill('Searching…', 'wait');
-    },
-    { enableHighAccuracy: true, maximumAge: 0 },
-  );
+  const b = $('#below'); if (b && !state.lastFix) b.innerHTML = 'Looking for GPS satellites… keep the phone near the window. The first fix can take a few minutes in flight mode.';
+  const btn = $('#btn-gps'); if (btn) { btn.textContent = 'Stop GPS'; btn.classList.add('on'); }
+  watchGPS();
   setFollow(true);
   requestWake();
 }
+
+// One watch for the whole session. If fixes stop arriving (the phone paused location while
+// the app was in the background, or a watch got stuck), it is restarted automatically.
+function watchGPS() {
+  if (state.watchId != null) navigator.geolocation.clearWatch(state.watchId);
+  const opts = { enableHighAccuracy: true, maximumAge: 10000, timeout: 30000 };
+  state.watchId = navigator.geolocation.watchPosition(onFix, onFixError, opts);
+  navigator.geolocation.getCurrentPosition(onFix, () => {}, { enableHighAccuracy: true, maximumAge: 30000, timeout: 30000 });
+  state.watchStarted = Date.now();
+}
+
+function onFix(p) {
+  const c = p.coords;
+  const s = { lon: c.longitude, lat: c.latitude, alt: c.altitude, speed: c.speed, heading: c.heading, acc: c.accuracy };
+  state.lastFix = { s, t: Date.now() };
+  try { localStorage.setItem('fw-lastfix', JSON.stringify(state.lastFix)); } catch { /* storage full */ }
+  if (!state.route) return;
+  setPill(`GPS ±${Math.round(c.accuracy)} m`, 'ok');
+  ingest(s);
+  recordTrack(s);
+}
+
+function onFixError(err) {
+  if (err.code === 1) {
+    state.gpsWanted = false;
+    setPill('No permission', 'bad');
+    const el = $('#below'); if (el) el.innerHTML = 'Location permission was denied. Allow location for this app in your phone settings, then try again.';
+    stopGPS();
+  } else setPill('Searching…', 'wait');
+}
+
+setInterval(() => {
+  if (!state.gpsWanted || document.visibilityState !== 'visible') return;
+  const last = state.lastFix?.t || 0;
+  if (Date.now() - last > 25000 && Date.now() - (state.watchStarted || 0) > 20000) watchGPS();
+}, 10000);
+
 function stopGPS() {
+  state.gpsWanted = false;
   if (state.watchId != null) navigator.geolocation.clearWatch(state.watchId);
   state.watchId = null;
   const btn = $('#btn-gps'); if (btn) { btn.textContent = 'Start GPS'; btn.classList.remove('on'); }
 }
 function stopLive() {
-  stopGPS(); stopSim(); releaseWake();
+  // GPS keeps running when you go back, so it is ready the moment you reopen the flight.
+  stopSim(); releaseWake();
   state.live = null; motion.has = false;
   state.marker?.remove(); state.marker = null;
   document.body.classList.remove('flying', 'ui-off', 'in-cabin');
@@ -770,6 +879,7 @@ function stopLive() {
 }
 
 function recordTrack(s) {
+  if (!state.route || !state.map) return;
   const last = state.track[state.track.length - 1];
   if (last && dist(last, [s.lon, s.lat]) < 1) return;
   state.track.push([+s.lon.toFixed(5), +s.lat.toFixed(5)]);
@@ -833,6 +943,12 @@ function renderInfo() {
   if (pr.d > 150 && !live.sim) setPill(`${Math.round(pr.d)} km off route`, 'wait');
 
   const { near, nd } = nearestPlace(pos);
+  const kmhNow = kmh && kmh > 150 ? kmh : null;
+  // Far off the planned line, route-based events don't apply; use the actual state below instead.
+  const onRoute = pr.d < 60;
+  if (onRoute) checkAlerts(pr.along, kmhNow, pos, heading);
+  let nowEv = onRoute ? currentEvent(pr.along) : null;
+  if (!onRoute) { const st = stateAt(pos); if (st) nowEv = { type: 's', name: st, origin: true, kind: 'over' }; }
   let line, big;
   if (near && nd < 150) {
     const ns = sideOf(pos, heading, [near.lon, near.lat]).side;
@@ -844,6 +960,7 @@ function renderInfo() {
     line = '<b>Open country</b> <span class="muted">no major place within 150 km</span>';
     big = '<span class="lbl">Below you</span><b>Open country or sea</b>';
   }
+  if (nowEv) line = `${ICON[nowEv.type]} <b>${esc(eventTitle(nowEv))}</b> <span class="muted">${nowEv.kind === 'near' ? `${Math.round(nowEv.d)} km ${sideWord(nowSide(nowEv, pos, heading))}` : 'now'}</span>`;
   const bl = $('#below-line'); if (bl) bl.innerHTML = line;
   const bb = $('#below'); if (bb) bb.innerHTML = big;
 
@@ -855,14 +972,79 @@ function renderInfo() {
     .sort((a, b) => (b.p.rank + (side && b.side === side ? 0.25 : 0)) - (a.p.rank + (side && a.side === side ? 0.25 : 0)))
     .slice(0, 4)
     .sort((a, b) => a.p.along - b.p.along);
-  const upEl = $('#upcoming');
-  if (upEl) {
-    upEl.innerHTML = up.length
-      ? `<span class="lbl">Coming up</span>${up.map(({ p, d, side: ps }) => `
+  const evs = state.events.filter((e) => e.start > pr.along + 1 && !(e.type === 's' && e.origin)).slice(0, 4);
+  const rows = [
+    ...up.slice(0, 3).map(({ p, d, side: ps }) => ({ at: p.along, html: `
         <div class="up ${side && ps === side ? 'mine' : ''}"><span class="badge ${ps}">${ps === 'L' ? 'LEFT' : 'RIGHT'}</span><span class="up-name">${esc(p.label)}</span>
-        <span class="up-meta">${Math.round(d)} km${kmh && kmh > 150 ? ` · ${fmtDur(d / kmh)}` : ''}</span></div>`).join('')}`
-      : '';
+        <span class="up-meta">${Math.round(d)} km${kmh && kmh > 150 ? ` · ${fmtDur(d / kmh)}` : ''}</span></div>` })),
+    ...evs.map((e) => {
+      const km = e.start - pr.along;
+      const sd = e.kind === 'near' ? nowSide(e, pos, heading) : '';
+      return { at: e.start, html: `
+        <div class="up ev ev-${e.type}"><span class="badge ev">${ICON[e.type]}</span><span class="up-name">${esc(eventTitle(e))}<small>${esc(eventSub(e))}${sd ? ` · ${sideWord(sd)}` : ''}</small></span>
+        <span class="up-meta">${kmh && kmh > 150 ? fmtDur(km / kmh) : `${Math.round(km)} km`}</span></div>` };
+    }),
+  ].sort((a, b) => a.at - b.at).slice(0, 6);
+  const upEl = $('#upcoming');
+  if (upEl) upEl.innerHTML = rows.length ? `<span class="lbl">Coming up</span>${rows.map((r) => r.html).join('')}` : '';
+}
+
+// ---------- what you're flying over ----------
+function currentEvent(along) {
+  let best = null;
+  for (const e of state.events) {
+    if (e.start - along > 4) break;
+    const active = e.kind === 'over' ? along >= e.start - 1 && along <= e.end + 1 : Math.abs(along - e.start) < (e.kind === 'near' ? 12 : 4);
+    if (!active || (e.type === 's' && e.origin && along > 30)) continue;
+    const prio = { r: 6, t: 6, p: 5, k: 4, l: 4, g: 3, s: 2 }[e.type] || 1;
+    if (!best || prio > best.prio || (prio === best.prio && e.type === 's' && e.start > best.e.start)) best = { e, prio };
   }
+  return best?.e || null;
+}
+let stateCache = { key: '', name: null };
+function stateAt(pos) {
+  const key = `${pos[0].toFixed(2)},${pos[1].toFixed(2)}`;
+  if (stateCache.key === key) return stateCache.name;
+  let name = null;
+  for (const [type, nm, , b, geom] of state.geo || []) {
+    if (type !== 's' || pos[0] < b[0] || pos[0] > b[2] || pos[1] < b[1] || pos[1] > b[3]) continue;
+    if (inPolys(pos, geom)) { name = nm; break; }
+  }
+  stateCache = { key, name };
+  return name;
+}
+function nowSide(e, pos, heading) {
+  return e.point ? sideOf(pos, heading, e.point).side : e.side || 'L';
+}
+function checkAlerts(along, kmh, pos, heading) {
+  const lead = kmh ? (kmh * 75) / 3600 : 10; // ~75 seconds ahead
+  for (const e of state.events) {
+    if (e.start - along > lead + 1) break;
+    const key = e.type === 's' ? `s:${e.name}` : `${e.type}:${e.name}:${Math.round(e.start)}`;
+    if (state.alerted.has(key)) continue;
+    if (e.type === 's' && e.origin) { state.alerted.add(key); continue; }
+    if (along - (e.kind === 'over' ? e.end : e.start) > 2) { state.alerted.add(key); continue; } // already passed
+    state.alerted.add(key);
+    const km = Math.max(0, e.start - along);
+    const when = km < 1.5 ? 'now' : kmh ? `in ${Math.max(1, Math.round((km / kmh) * 60))} min` : `in ${Math.round(km)} km`;
+    let hint;
+    if (e.type === 'r' || e.type === 't') hint = 'Look down';
+    else if (e.kind === 'near') hint = `Look ${sideWord(nowSide(e, pos, heading))}`;
+    else if (e.type === 's') hint = e.extra || '';
+    else hint = eventSub(e);
+    const title = e.type === 's' ? `Welcome to ${e.name}` : eventTitle(e);
+    showToast(ICON[e.type], title, `${when === 'now' ? '' : `${when} · `}${hint}`);
+    break;
+  }
+}
+let toastTimer;
+function showToast(icon, title, sub) {
+  const t = $('#toast'); if (!t) return;
+  t.innerHTML = `<span class="t-ico">${icon}</span><span><b>${esc(title)}</b><small>${esc(sub)}</small></span>`;
+  t.classList.remove('show'); void t.offsetWidth; t.classList.add('show');
+  try { navigator.vibrate?.(60); } catch { /* not supported */ }
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => t.classList.remove('show'), 7000);
 }
 
 // Nearest city/peak from the whole bundled dataset, so it works even far off the planned line.
@@ -887,8 +1069,11 @@ async function requestWake() {
 }
 function releaseWake() { state.wake?.release?.().catch(() => {}); state.wake = null; }
 document.addEventListener('visibilitychange', () => {
-  if (document.visibilityState === 'visible' && state.watchId != null) requestWake();
+  if (document.visibilityState !== 'visible' || !state.gpsWanted) return;
+  watchGPS();
+  if (state.route) requestWake();
 });
+try { state.lastFix = JSON.parse(localStorage.getItem('fw-lastfix') || 'null'); } catch { /* ignore */ }
 
 // ---------- actions ----------
 app.addEventListener('click', async (e) => {
@@ -920,7 +1105,7 @@ app.addEventListener('click', async (e) => {
     state.installEvt?.prompt(); state.installEvt = null; renderHome();
   } else if (a === 'dock') setDock(!state.dockOpen);
   else if (a === 'gps') {
-    if (state.watchId != null) { stopGPS(); setPill('GPS off'); releaseWake(); } else startGPS();
+    if (state.gpsWanted) { stopGPS(); setPill('GPS off'); releaseWake(); } else startGPS();
   } else if (a === 'sim') {
     if (state.live?.sim && $('#btn-sim')?.classList.contains('on')) { stopSim(); setPill('GPS off'); } else { startSim(); if (state.view === 'window') setDock(false); }
   } else if (a === 'play') {
@@ -967,6 +1152,7 @@ async function startDemo(qs) {
   const side = (qs.get('side') || 'L').toUpperCase() === 'R' ? 'R' : 'L';
   if (qs.has('embed')) document.body.classList.add('embed');
   state.route = await makeRoute(from, to);
+  await loadTripFeatures(null);
   state.trip = { id: 'demo', from, to, total: state.route.path.total, carrier: '', flight: '', airline: '', seat: side === 'L' ? '14A' : '14F', side, earth: true };
   state.earthStyle = state.vectorStyle ? buildEarthStyle(state.vectorStyle) : null;
   if (qs.has('night')) state.night = qs.get('night') !== '0';
