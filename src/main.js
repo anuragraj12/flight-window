@@ -6,8 +6,9 @@ import { registerSW } from 'virtual:pwa-register';
 import { dist, bearing, greatCircle, buildPath, pointAt, headingAt, project, sideOf, corridorTiles, destination, angDiff } from './geo.js';
 import {
   registerProtocol, getStyle, buildStyle, buildEarthStyle, saveStyle, loadSavedStyle,
-  buildUrlList, prefetch, clearAll, fontStacks, MAX_Z, PLAN, HI_PLAN, SKY, areaAround, openTileCache,
+  buildUrlList, prefetch, clearAll, fontStacks, MAX_Z, PLAN, HI_PLAN, SKY, areaAround, openTileCache, missingUrls,
 } from './offline.js';
+import { makeStory } from './story.js';
 import { extractTileFeatures, buildEvents, eventTitle, eventSub, summary, overlayData, ICON, inPolys } from './features.js';
 import { readTicket, seatInfo } from './boarding.js';
 
@@ -305,8 +306,12 @@ function renderHome() {
       <div class="trip-main" data-action="open" data-id="${esc(t.id)}">
         <div class="trip-codes">${esc(t.from.code)} <span>→</span> ${esc(t.to.code)}</div>
         <div class="trip-sub">${esc(t.airline || '')}${t.airline ? ' · ' : ''}${esc(ticketLine(t) || `${t.from.city} to ${t.to.city}`)}</div>
-        <div class="trip-sub ok">✓ Saved offline${t.bytes ? ` · ${fmtMB(t.bytes)}` : ''}${t.earth ? ' · 3D view' : ''}</div>
+        ${t.pending
+          ? `<div class="trip-sub warn" data-dl-text="${esc(t.id)}">${downloads.has(t.id) ? 'Downloading…' : 'Download paused'} · ${Math.round(((t.done || 0) / (t.files || 1)) * 100)}%</div>
+             <div class="bar thin"><div data-dl-bar="${esc(t.id)}" style="width:${((t.done || 0) / (t.files || 1)) * 100}%"></div></div>`
+          : `<div class="trip-sub ok">✓ Saved offline${t.bytes ? ` · ${fmtMB(t.bytes)}` : ''}${t.earth ? ' · 3D view' : ''}</div>`}
       </div>
+      ${t.pending && !downloads.has(t.id) ? `<button class="small" data-action="resume" data-id="${esc(t.id)}">Resume</button>` : ''}
       <button class="ghost small" data-action="delete" data-id="${esc(t.id)}" aria-label="Delete">✕</button>
     </div>`).join('');
   app.innerHTML = `
@@ -355,6 +360,13 @@ function seatHtml(seat) {
   return `<span class="seat-pill ${si.side}">Seat ${esc(seat)} · ${sideWord(si.side)} ${si.kind === 'window' ? 'window' : si.kind}</span>`;
 }
 
+function ticketSide() {
+  const t = state.ticket;
+  if (t.side) return t.side;
+  const si = seatInfo(t.seat);
+  return si && si.side !== 'C' ? si.side : '';
+}
+
 function renderTicket() {
   const t = state.ticket;
   app.innerHTML = `<button class="back glass" data-action="home" aria-label="Back">‹</button>
@@ -372,7 +384,12 @@ function renderTicket() {
           <div><span>PNR</span><b>${esc(t.pnr || '—')}</b></div>
         </div>
       </div>
-      ${t.seat ? `<div class="center">${seatHtml(t.seat)}</div>` : '<div class="note">No seat on this pass yet. You can add it on the next screen.</div>'}
+      ${t.seat ? `<div class="center">${seatHtml(t.seat)}</div>` : '<div class="note">No seat on this pass yet.</div>'}
+      <div class="side-pick"><span>Your window is on the</span>
+        <div class="seg small" id="ticket-side">
+          <button data-action="ticket-side" data-s="L" class="${ticketSide() === 'L' ? 'on' : ''}">Left</button>
+          <button data-action="ticket-side" data-s="R" class="${ticketSide() === 'R' ? 'on' : ''}">Right</button>
+        </div></div>
       <div class="note tiny">Read from the ${t.source === 'barcode' ? 'boarding pass barcode' : 'ticket text'}${t.legs > 1 ? ` (showing leg 1 of ${t.legs})` : ''}.</div>
       <button class="primary wide" data-action="ticket-ok">Looks right, continue</button>
       <button class="wide ghost" data-action="new">Edit manually</button>
@@ -395,9 +412,11 @@ function renderPlan(pre = {}) {
     </div>`;
   const picked = { from: pre.from || null, to: pre.to || null };
   const meta = { ...pre };
+  state.planMeta = meta;
   if (picked.from) $('#from').value = `${picked.from.code} · ${picked.from.city}`;
   if (picked.to) $('#to').value = `${picked.to.code} · ${picked.to.city}`;
   const go = () => { if (picked.from && picked.to) preview(picked.from, picked.to, meta); };
+  state.planGo = go;
   for (const key of ['from', 'to']) {
     const input = $(`#${key}`), dd = $(`#dd-${key}`);
     input.addEventListener('input', () => {
@@ -413,7 +432,7 @@ function renderPlan(pre = {}) {
       };
     });
   }
-  $('#seat').addEventListener('input', (e) => { meta.seat = e.target.value.trim().toUpperCase(); go(); });
+  $('#seat').addEventListener('input', (e) => { meta.seat = e.target.value.trim().toUpperCase(); meta.side = ''; go(); });
   $('#flightno').addEventListener('input', (e) => {
     const m = e.target.value.trim().toUpperCase().match(/^([A-Z0-9]{2})\s?(\d{1,4})$/);
     if (m) { meta.carrier = m[1]; meta.flight = m[2]; meta.airline = state.airlines?.[m[1]] || meta.airline; }
@@ -436,7 +455,9 @@ async function preview(from, to, meta) {
   const route = state.route;
   const s = route.sides;
   const best = Math.abs(s.L - s.R) < 1.5 ? null : s.L > s.R ? 'L' : 'R';
-  const si = seatInfo(meta.seat);
+  const si0 = seatInfo(meta.seat);
+  const pickedSide = meta.side || (si0 && si0.side !== 'C' ? si0.side : '');
+  const si = pickedSide ? { ...(si0 || { kind: 'window' }), side: pickedSide } : si0;
   const { spots, all } = routeSpots(from, to);
   const tiles = corridorTiles(route.path, [...PLAN, ...HI_PLAN], all);
   const vec = state.vectorStyle ? buildUrlList(state.vectorStyle, route.path, spots, tiles) : { estBytes: 0 };
@@ -451,9 +472,9 @@ async function preview(from, to, meta) {
   if (si && si.side !== 'C') {
     const mine = si.side === 'L' ? s.nL : s.nR;
     const good = !best || best === si.side;
-    seatMsg = `<div class="note ${good ? 'ok' : 'warn'}">Seat ${esc(meta.seat)} is on the <b>${sideWord(si.side)}</b>${si.kind === 'window' ? ' window' : ''}: about ${mine} places on your side.${good ? '' : ` The ${sideWord(best)} side has more. Ask to switch if you can.`}</div>`;
+    seatMsg = `<div class="note ${good ? 'ok' : 'warn'}">${meta.seat ? `Seat ${esc(meta.seat)}` : 'Your seat'} is on the <b>${sideWord(si.side)}</b>${si.kind === 'window' ? ' window' : ''}: about ${mine} places on your side.${good ? '' : ` The ${sideWord(best)} side has more. Ask to switch if you can.`} <span class="muted">Tap a side to change it.</span></div>`;
   } else {
-    seatMsg = `<p class="hint">${best ? `For the best view, sit on the <b>${sideWord(best)}</b> side (facing forward).` : 'Both sides have about the same to see.'} Based on the direct route; the real path can differ.</p>`;
+    seatMsg = `<p class="hint">${best ? `For the best view, sit on the <b>${sideWord(best)}</b> side (facing forward).` : 'Both sides have about the same to see.'} Tap the side you're sitting on. Based on the direct route; the real path can differ.</p>`;
   }
   info.innerHTML = `
     <div class="stats">
@@ -462,8 +483,8 @@ async function preview(from, to, meta) {
       <div><b>${route.pois.length}</b><span>places on the way</span></div>
     </div>
     <div class="seat">
-      <div class="seat-side L ${best === 'L' ? 'best' : ''} ${si?.side === 'L' ? 'mine' : ''}"><b>Left side</b><span>${s.nL} places${si?.side === 'L' ? ' · you' : ''}</span></div>
-      <div class="seat-side R ${best === 'R' ? 'best' : ''} ${si?.side === 'R' ? 'mine' : ''}"><b>Right side</b><span>${s.nR} places${si?.side === 'R' ? ' · you' : ''}</span></div>
+      <button class="seat-side L ${best === 'L' ? 'best' : ''} ${si?.side === 'L' ? 'mine' : ''}" data-action="pick-side" data-s="L"><b>Left side</b><span>${s.nL} places${si?.side === 'L' ? ' · you' : ''}</span></button>
+      <button class="seat-side R ${best === 'R' ? 'best' : ''} ${si?.side === 'R' ? 'mine' : ''}" data-action="pick-side" data-s="R"><b>Right side</b><span>${s.nR} places${si?.side === 'R' ? ' · you' : ''}</span></button>
     </div>
     ${seatMsg}
     ${onRoute}
@@ -490,32 +511,21 @@ async function saveTrip(route, meta, withEarth) {
     if (earthStyle) await saveStyle(`${id}-earth`, earthStyle);
     await Promise.all(['/data/places.json', '/data/airports.json', '/data/airlines.json', '/data/geo.json'].map((u) => fetch(u).catch(() => {})));
     const list = [...urls];
-    box.innerHTML = `<div class="bar"><div id="bar-fill"></div></div><div class="note" id="bar-text">Downloading maps… 0 / ${list.length}</div>`;
-    const res = await prefetch(list, ({ done, total, bytes }) => {
-      $('#bar-fill').style.width = `${(done / total) * 100}%`;
-      $('#bar-text').textContent = `Downloading maps… ${done} / ${total} · ${fmtMB(bytes)}`;
-    });
-    $('#bar-text').textContent = 'Finding rivers, national parks and reserves on your route…';
-    try {
-      const vtpl = Object.values(style.sources).find((x) => x.type === 'vector' && x.tiles)?.tiles[0].replace(/^fwc:\/\//, 'https://');
-      const prefix = vtpl ? new URL(vtpl.split('{z}')[0]).href : null;
-      const z10 = prefix ? list.filter((u) => u.startsWith(prefix) && /\/10\/\d+\/\d+\.pbf$/.test(u)) : [];
-      const osm = await extractTileFeatures(z10, await openTileCache());
-      await saveStyle(`${id}-feat`, osm);
-    } catch (e) { console.warn('feature extraction failed', e); }
     const si = seatInfo(meta.seat);
     const trip = {
       id, from: route.from, to: route.to, total: route.path.total,
       carrier: meta.carrier || '', flight: meta.flight || '', airline: meta.airline || (meta.carrier && state.airlines?.[meta.carrier]) || '',
-      seat: meta.seat || '', side: si && si.side !== 'C' ? si.side : '', date: meta.date || null,
-      files: list.length, bytes: res.bytes, failed: res.failed, earth: !!earthStyle, hi: true, createdAt: Date.now(),
+      seat: meta.seat || '', side: meta.side || (si && si.side !== 'C' ? si.side : ''), date: meta.date || null,
+      files: list.length, done: 0, bytes: 0, failed: 0, pending: true, earth: !!earthStyle, hi: true, createdAt: Date.now(),
     };
+    await saveStyle(`${id}-urls`, list);
     state.trips = [trip, ...state.trips.filter((t) => !(t.from.code === trip.from.code && t.to.code === trip.to.code))];
     saveTrips();
-    const pct = Math.round((res.failed / list.length) * 100);
-    box.innerHTML = `<div class="note ${pct > 10 ? 'warn' : 'ok'}">${pct > 10 ? `Saved, but ${res.failed} of ${list.length} map files failed. Try saving again on better Wi-Fi.` : '✓ Saved. It will work in flight mode.'}</div>
-      <button class="primary wide" data-action="open" data-id="${esc(id)}">Open flight view</button>`;
+    box.dataset.trip = id;
+    box.innerHTML = `<div class="bar"><div data-dl-bar="${esc(id)}"></div></div><div class="note" data-dl-text="${esc(id)}">Downloading maps…</div>
+      <div class="note tiny">You can leave the app. ${'BackgroundFetchManager' in window ? 'It keeps downloading in the background.' : 'Keep it open for the fastest download; if you leave, it carries on from where it stopped when you come back.'}</div>`;
     btn.remove();
+    await runDownload(trip, list);
   } catch (e) {
     console.error(e);
     btn.disabled = false; btn.textContent = 'Try again';
@@ -523,10 +533,121 @@ async function saveTrip(route, meta, withEarth) {
   }
 }
 
+// ---------- downloads that survive leaving the app ----------
+const downloads = new Map();
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+const waitVisible = () => (document.visibilityState === 'visible' ? Promise.resolve() : new Promise((r) => {
+  const f = () => { if (document.visibilityState === 'visible') { document.removeEventListener('visibilitychange', f); r(); } };
+  document.addEventListener('visibilitychange', f);
+}));
+
+function dlUI(id, text, frac) {
+  document.querySelectorAll(`[data-dl-text="${id}"]`).forEach((el) => { el.textContent = text; });
+  if (frac != null) document.querySelectorAll(`[data-dl-bar="${id}"]`).forEach((el) => { el.style.width = `${Math.min(100, frac * 100)}%`; });
+}
+
+function runDownload(trip, list) {
+  if (downloads.has(trip.id)) return downloads.get(trip.id);
+  const job = (async () => {
+    requestWake();
+    let lastSave = 0;
+    const onProgress = ({ done, total, bytes }) => {
+      trip.done = done;
+      dlUI(trip.id, `Downloading maps… ${Math.round((done / total) * 100)}% · ${fmtMB((trip.bytes || 0) + bytes)}`, done / total);
+      if (Date.now() - lastSave > 3000) { lastSave = Date.now(); saveTrips(); }
+    };
+    if (await startBackgroundFetch(trip, list).catch(() => false)) await waitBackgroundFetch(trip);
+    let res = await prefetch(list, onProgress);
+    let bytes = res.bytes;
+    for (let round = 0; res.failedUrls.length && round < 5; round++) {
+      await waitVisible();
+      dlUI(trip.id, `Retrying ${res.failedUrls.length} files…`, null);
+      await sleep(1500 * (round + 1));
+      res = await prefetch(res.failedUrls, () => {});
+      bytes += res.bytes;
+    }
+    await finishTrip(trip, list, bytes, res.failedUrls.length);
+  })().catch((e) => { console.warn(e); dlUI(trip.id, 'Download paused · it resumes when you reopen the app', null); })
+    .finally(() => { downloads.delete(trip.id); if (!state.route) releaseWake(); });
+  downloads.set(trip.id, job);
+  return job;
+}
+
+async function finishTrip(trip, list, bytes, failed) {
+  dlUI(trip.id, 'Finding rivers, national parks and reserves on your route…', 1);
+  try {
+    const style = await loadSavedStyle(trip.id);
+    const vtpl = Object.values(style.sources).find((x) => x.type === 'vector' && x.tiles)?.tiles[0].replace(/^fwc:\/\//, 'https://');
+    const prefix = vtpl ? new URL(vtpl.split('{z}')[0]).href : null;
+    const z10 = prefix ? list.filter((u) => u.startsWith(prefix) && /\/10\/\d+\/\d+\.pbf$/.test(u)) : [];
+    await saveStyle(`${trip.id}-feat`, await extractTileFeatures(z10, await openTileCache()));
+  } catch (e) { console.warn('feature extraction failed', e); }
+  Object.assign(trip, { pending: false, done: list.length, bytes: (trip.bytes || 0) + bytes, failed });
+  const i = state.trips.findIndex((t) => t.id === trip.id);
+  if (i >= 0) state.trips[i] = trip;
+  saveTrips();
+  const pct = Math.round((failed / list.length) * 100);
+  const box = document.querySelector(`#save-progress[data-trip="${trip.id}"]`);
+  if (box) {
+    box.innerHTML = `<div class="note ${pct > 10 ? 'warn' : 'ok'}">${pct > 10 ? `Saved, but ${failed} of ${list.length} map files failed. Try saving again on better Wi-Fi.` : '✓ Saved. It will work in flight mode.'}</div>
+      <button class="primary wide" data-action="open" data-id="${esc(trip.id)}">Open flight view</button>`;
+  } else if (!state.route && !state.ticket && document.querySelector('.home')) renderHome();
+}
+
+// Android / Chrome: hand the download to the browser so it continues with the app closed.
+async function startBackgroundFetch(trip, list) {
+  const reg = await navigator.serviceWorker?.ready;
+  if (!reg?.backgroundFetch) return false;
+  if (await reg.backgroundFetch.get(trip.id)) return true;
+  dlUI(trip.id, 'Preparing download…', null);
+  const missing = await missingUrls(list);
+  if (missing.length < 40) return false;
+  await reg.backgroundFetch.fetch(trip.id, missing.map((u) => new Request(u, { mode: 'cors' })), {
+    title: `Saving ${trip.from.code} → ${trip.to.code} for offline`,
+    icons: [{ src: '/icons/icon-192.png', sizes: '192x192', type: 'image/png' }],
+  });
+  return true;
+}
+async function waitBackgroundFetch(trip) {
+  const reg = await navigator.serviceWorker.ready;
+  const bg = await reg.backgroundFetch.get(trip.id);
+  if (bg) {
+    const ok = await new Promise((resolve) => {
+      let last = -1, lastChange = Date.now();
+      const tick = () => {
+        if (bg.downloaded !== last) { last = bg.downloaded; lastChange = Date.now(); }
+        dlUI(trip.id, `Downloading in the background · ${fmtMB(bg.downloaded)} · you can leave the app`, null);
+        if (bg.result) { done(true); }
+      };
+      // if it makes no progress for 45 s while you're watching, take over in the foreground
+      const timer = setInterval(() => {
+        if (document.visibilityState === 'visible' && Date.now() - lastChange > 45000) { bg.abort().catch(() => {}); done(false); }
+      }, 5000);
+      function done(v) { clearInterval(timer); bg.removeEventListener('progress', tick); resolve(v); }
+      bg.addEventListener('progress', tick);
+      tick();
+    });
+    if (!ok) return;
+  }
+  const meta = await caches.open('fw-data-v1');
+  for (let i = 0; i < 40 && !(await meta.match(`/__fw/bg-${trip.id}-done`)); i++) await sleep(1000);
+}
+
+async function resumePending() {
+  if (!navigator.onLine) return;
+  for (const t of state.trips.filter((x) => x.pending && !downloads.has(x.id))) {
+    const list = await loadSavedStyle(`${t.id}-urls`);
+    if (list?.length) runDownload(t, list); else { t.pending = false; saveTrips(); }
+  }
+  if (!state.route && !state.ticket && document.querySelector('.home')) renderHome();
+}
+
 async function openTrip(id) {
   const trip = state.trips.find((t) => t.id === id);
   if (!trip) return renderHome();
   app.innerHTML = `<div class="sheet glass"><div class="note">Opening ${esc(trip.from.code)} → ${esc(trip.to.code)}…</div></div>`;
+  try { state.progress = JSON.parse(localStorage.getItem(`fw-prog-${trip.id}`) || 'null') || { maxAlong: 0 }; } catch { state.progress = { maxAlong: 0 }; }
+  state.storyShown = !!state.progress.storyShown;
   const vs = await loadSavedStyle(trip.id);
   if (vs) state.vectorStyle = vs;
   // Built fresh from the trip's own map style so its night-light layers use tiles already saved.
@@ -619,7 +740,9 @@ function renderFly() {
           <button class="primary ${state.gpsWanted ? 'on' : ''}" data-action="gps" id="btn-gps">${state.gpsWanted ? 'Stop GPS' : 'Start GPS'}</button>
           <button data-action="sim" id="btn-sim">Simulate</button>
           <button class="icon ${state.follow ? 'on' : ''}" data-action="follow" id="btn-follow" title="Follow plane">⌖</button>
+          <button class="icon" data-action="story" title="Flight story">🎞</button>
         </div>
+        ${state.trip?.pending ? `<div class="note warn">Maps are still downloading (<span data-dl-text="${esc(state.trip.id)}">${Math.round(((state.trip.done || 0) / (state.trip.files || 1)) * 100)}%</span>). Keep the app open on Wi-Fi before you fly.</div>` : ''}
         <div id="sim-row" class="sim-row hidden">
           <button class="icon" data-action="play" id="btn-play">▶</button>
           <div class="seg small" id="speeds">${[1, 10, 60].map((k) => `<button data-action="speed" data-k="${k}" class="${state.simSpeed === k ? 'on' : ''}">${k}×</button>`).join('')}</div>
@@ -940,6 +1063,7 @@ function renderInfo() {
   const side = mySide();
   if (side) set('#faces', ` · window faces ${cardinal(heading + (side === 'L' ? -90 : 90))}`);
   const prog = $('#prog'); if (prog) prog.style.width = `${Math.min(100, (pr.along / r.path.total) * 100)}%`;
+  trackProgress(pr, kmh, live);
   if (pr.d > 150 && !live.sim) setPill(`${Math.round(pr.d)} km off route`, 'wait');
 
   const { near, nd } = nearestPlace(pos);
@@ -987,6 +1111,57 @@ function renderInfo() {
   ].sort((a, b) => a.at - b.at).slice(0, 6);
   const upEl = $('#upcoming');
   if (upEl) upEl.innerHTML = rows.length ? `<span class="lbl">Coming up</span>${rows.map((r) => r.html).join('')}` : '';
+}
+
+// ---------- flight progress & story ----------
+function trackProgress(pr, kmh, live) {
+  const t = state.trip; if (!t || t.id === 'demo' && !live.sim) return;
+  const P = state.progress || (state.progress = { maxAlong: 0 });
+  if (pr.d < 120) P.maxAlong = Math.max(P.maxAlong || 0, pr.along);
+  if (!live.sim && kmh && kmh > 150) { P.t0 ??= Date.now(); P.t1 = Date.now(); }
+  if (t.id !== 'demo') { try { localStorage.setItem(`fw-prog-${t.id}`, JSON.stringify(P)); } catch { /* ignore */ } }
+  const rem = state.route.path.total - pr.along;
+  if (!state.storyShown && P.maxAlong > state.route.path.total * 0.6 && rem < 12 && (!kmh || kmh < 420)) {
+    state.storyShown = P.storyShown = true;
+    if (t.id !== 'demo') try { localStorage.setItem(`fw-prog-${t.id}`, JSON.stringify(P)); } catch { /* ignore */ }
+    showToast('🎞', 'Your flight story is ready', 'Tap 🎞 in the panel to see and share it');
+    setTimeout(() => openStory(), 2500);
+  }
+}
+
+async function openStory() {
+  if (!state.route || !state.trip) return;
+  let ov = $('#story');
+  if (!ov) { ov = document.createElement('div'); ov.id = 'story'; document.body.appendChild(ov); }
+  ov.innerHTML = '<div class="story-box"><div class="note">Drawing your flight story…</div></div>';
+  ov.classList.add('show');
+  try {
+    const canvas = await makeStory({ trip: state.trip, route: state.route, events: state.events, geo: await loadGeo(), track: state.track, progress: state.progress, pois: state.route.pois });
+    const blob = await new Promise((r) => canvas.toBlob(r, 'image/png'));
+    const url = URL.createObjectURL(blob);
+    const file = new File([blob], `flight-${state.trip.from.code}-${state.trip.to.code}.png`, { type: 'image/png' });
+    const canShare = !!navigator.canShare?.({ files: [file] });
+    ov.innerHTML = `<div class="story-box">
+      <img src="${url}" alt="Flight story for ${esc(state.trip.from.code)} to ${esc(state.trip.to.code)}">
+      <div class="story-actions">
+        ${canShare ? '<button class="primary" data-story="share">Share</button>' : ''}
+        <a class="btn-like ${canShare ? '' : 'primary'}" href="${url}" download="${esc(file.name)}">Save image</a>
+        <button data-story="close">Close</button>
+      </div>
+      ${canShare ? '' : '<div class="note tiny">On iPhone you can also press and hold the image to save it.</div>'}
+    </div>`;
+    ov.onclick = async (e) => {
+      const b = e.target.closest('[data-story]');
+      if (e.target === ov || b?.dataset.story === 'close') { ov.classList.remove('show'); return; }
+      if (b?.dataset.story === 'share') {
+        try { await navigator.share({ files: [file], title: 'My flight', text: `${state.trip.from.city} → ${state.trip.to.city} with Flight Window` }); } catch { /* cancelled */ }
+      }
+    };
+  } catch (e) {
+    console.error(e);
+    ov.innerHTML = `<div class="story-box"><div class="note warn">Couldn't draw the story: ${esc(e.message)}</div><div class="story-actions"><button data-story="close">Close</button></div></div>`;
+    ov.onclick = (ev) => { if (ev.target === ov || ev.target.closest('[data-story="close"]')) ov.classList.remove('show'); };
+  }
 }
 
 // ---------- what you're flying over ----------
@@ -1083,10 +1258,20 @@ app.addEventListener('click', async (e) => {
   if (a === 'home') renderHome();
   else if (a === 'new') {
     const t = state.ticket; state.ticket = null;
-    renderPlan(t ? { from: t.from, to: t.to, seat: t.seat, carrier: t.carrier, flight: t.flight, airline: t.airline, date: t.date } : {});
+    renderPlan(t ? { from: t.from, to: t.to, seat: t.seat, side: ticketSide(), carrier: t.carrier, flight: t.flight, airline: t.airline, date: t.date } : {});
   } else if (a === 'ticket-ok') {
     const t = state.ticket;
-    renderPlan({ from: t.from, to: t.to, seat: t.seat, carrier: t.carrier, flight: t.flight, airline: t.airline, date: t.date });
+    renderPlan({ from: t.from, to: t.to, seat: t.seat, side: ticketSide(), carrier: t.carrier, flight: t.flight, airline: t.airline, date: t.date });
+  } else if (a === 'ticket-side') {
+    state.ticket.side = el.dataset.s;
+    document.querySelectorAll('[data-action="ticket-side"]').forEach((b) => b.classList.toggle('on', b === el));
+  } else if (a === 'pick-side') {
+    if (state.planMeta) { state.planMeta.side = el.dataset.s; state.planGo?.(); }
+  } else if (a === 'resume') {
+    const t = state.trips.find((x) => x.id === el.dataset.id);
+    const list = t && await loadSavedStyle(`${t.id}-urls`);
+    if (t && list) { runDownload(t, list); renderHome(); }
+  } else if (a === 'story') { openStory();
   } else if (a === 'open') openTrip(el.dataset.id);
   else if (a === 'delete') {
     const t = state.trips.find((x) => x.id === el.dataset.id);
@@ -1139,8 +1324,9 @@ window.addEventListener('offline', () => { if (!state.route && !state.ticket) re
   loadAirlines().catch(() => {});
   const qs = new URLSearchParams(location.search);
   if (qs.has('demo')) await startDemo(qs);
-  else { loadPlaces().catch(() => {}); renderHome(); }
+  else { loadPlaces().catch(() => {}); renderHome(); resumePending(); }
 })();
+window.addEventListener('online', () => resumePending());
 
 // ?demo=DEL-BLR[&side=L|R][&night=1][&view=window|3d|map][&speed=10][&embed]
 // Replays a flight in the simulator, straight from the network, without saving anything.

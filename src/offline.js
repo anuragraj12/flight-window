@@ -283,7 +283,8 @@ export function buildUrlList(style, path, spots, tiles = corridorTiles(path, PLA
 
 export async function prefetch(urls, onProgress, signal) {
   const cache = await openTiles();
-  let next = 0, done = 0, bytes = 0, failed = 0;
+  let next = 0, done = 0, bytes = 0;
+  const failedUrls = [];
   async function worker() {
     while (next < urls.length) {
       if (signal?.aborted) return;
@@ -294,23 +295,31 @@ export async function prefetch(urls, onProgress, signal) {
           let res;
           for (let attempt = 0; attempt < 3; attempt++) {
             try { res = await fetch(u, { mode: 'cors', signal }); break; }
-            catch (e) { if (e.name === 'AbortError') return; if (attempt === 2) throw e; await new Promise((r) => setTimeout(r, 600)); }
+            catch (e) { if (e.name === 'AbortError') return; if (attempt === 2) throw e; await new Promise((r) => setTimeout(r, 800 * (attempt + 1))); }
           }
           if (res.ok) {
             const buf = await res.clone().arrayBuffer();
             bytes += buf.byteLength;
             await cache.put(u, res);
-          } else if (res.status !== 404 && res.status !== 204) failed++;
+          } else if (res.status !== 404 && res.status !== 204) failedUrls.push(u);
         }
       } catch {
-        failed++;
+        failedUrls.push(u);
       }
       done++;
-      onProgress?.({ done, total: urls.length, bytes, failed });
+      onProgress?.({ done, total: urls.length, bytes, failed: failedUrls.length });
     }
   }
   await Promise.all(Array.from({ length: 8 }, worker));
-  return { done, bytes, failed };
+  return { done, bytes, failed: failedUrls.length, failedUrls };
+}
+
+// URLs from the list that are not saved yet.
+export async function missingUrls(urls) {
+  const cache = await openTiles();
+  const out = [];
+  for (const u of urls) if (!(await cache.match(u, { ignoreVary: true }))) out.push(u);
+  return out;
 }
 
 export const openTileCache = () => openTiles();

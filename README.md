@@ -11,6 +11,8 @@ Save your flight before you board (e.g. BLR → DEL). The app downloads the map 
 - **3D views**: satellite imagery on real terrain, a chase camera, and a **Window view** that puts the camera at your seat, at your GPS altitude, looking out your side of the plane, framed by a cabin window and wing with blinking nav and strobe lights
 - **Night mode**: glowing road networks, warm city light and black rivers drawn from OpenStreetMap data, like the view on a night flight
 - **What you're flying over**: rivers you cross, national parks, tiger and biosphere reserves, mountain ranges and plateaus, state borders and the Tropic of Cancer, with a heads-up about a minute before each one
+- **Flight story**: a shareable image at landing with your route, rivers crossed, states, reserves and the Tropic of Cancer
+- Downloads keep going if you leave the app (Background Fetch on Android) and resume where they stopped otherwise
 - Smooth 60 fps camera that glides between GPS fixes; real-time simulator (1×, 10×, 60×); tap the screen to hide all controls
 
 ## How it works

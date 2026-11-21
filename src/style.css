@@ -280,3 +280,20 @@ body.ui-off .look-float { display: none !important; }
 .toast b { display: block; font-size: 15.5px; }
 .toast small { color: #bcd3ee; font-size: 12.5px; }
 body.ui-off .toast { top: calc(20px + var(--safe-t)); }
+
+/* ---- v5: seat side pick, downloads, flight story ---- */
+.side-pick { display: flex; align-items: center; justify-content: center; gap: 10px; margin-top: 12px; color: var(--muted); font-size: 13.5px; }
+.side-pick .seg.small button { padding: 7px 16px; }
+button.seat-side { text-align: left; background: rgba(255, 255, 255, 0.04); font: inherit; color: inherit; cursor: pointer; }
+button.seat-side.mine.L { border-color: var(--L); background: rgba(255, 183, 3, 0.16); }
+button.seat-side.mine.R { border-color: var(--R); background: rgba(76, 201, 240, 0.16); }
+.trip-sub.warn { color: #ffd27a; }
+.trip .bar.thin { margin: 6px 0 0; }
+#story { position: fixed; inset: 0; z-index: 10; display: none; align-items: center; justify-content: center; background: rgba(2, 4, 10, 0.86); backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px); padding: calc(14px + var(--safe-t)) 14px calc(14px + var(--safe-b)); }
+#story.show { display: flex; }
+.story-box { width: min(420px, 100%); max-height: 100%; display: flex; flex-direction: column; gap: 12px; align-items: stretch; }
+.story-box img { width: 100%; max-height: calc(100vh - 140px); object-fit: contain; border-radius: 18px; box-shadow: 0 20px 60px rgba(0, 0, 0, 0.6); }
+.story-actions { display: flex; gap: 8px; }
+.story-actions > * { flex: 1; text-align: center; }
+.btn-like { display: inline-block; padding: 12px 14px; border-radius: 14px; border: 1px solid var(--line); background: rgba(255, 255, 255, 0.08); color: var(--text); text-decoration: none; font-weight: 600; }
+.btn-like.primary { background: linear-gradient(135deg, #2bb3e8, #6a3df0); border: 0; }
