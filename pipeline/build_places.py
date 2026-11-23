@@ -172,7 +172,7 @@ SELECT ?item (SAMPLE(?coord) AS ?c) (MAX(?sl) AS ?links)
        (SAMPLE(?enTitle) AS ?en) (SAMPLE(?hiTitle) AS ?hi)
        (SAMPLE(?img) AS ?image) (MAX(?pop) AS ?population)
        (SAMPLE(?lab) AS ?label) (SAMPLE(?desc) AS ?description)
-       (MAX(?isWhs) AS ?whs) (MAX(?elev) AS ?el)
+       (MAX(?isWhs) AS ?whs)
        (GROUP_CONCAT(DISTINCT ?clsId; separator=" ") AS ?classes)
 WHERE {
   SERVICE wikibase:box {
@@ -187,7 +187,6 @@ WHERE {
   OPTIONAL { ?item wdt:P18 ?img }
   OPTIONAL { ?item wdt:P1082 ?pop }
   OPTIONAL { ?item wdt:P1435 wd:%(whs)s . BIND(1 AS ?isWhs) }
-  OPTIONAL { ?item p:P2044/psn:P2044/wikibase:quantityAmount ?elev }  # elevation, in metres
   OPTIONAL { ?item rdfs:label ?lab FILTER(LANG(?lab) = "en") }
   OPTIONAL { ?item schema:description ?desc FILTER(LANG(?desc) = "en") }
 }
@@ -213,7 +212,7 @@ def parse_item(b: dict) -> dict | None:
         "label": val(b, "label"), "desc": val(b, "description"),
         "classes": (val(b, "classes") or "").split(),
         "whs": val(b, "whs") == "1",
-        "el": int(float(val(b, "el"))) if val(b, "el") else 0,
+        "el": 0,
     }
 
 
@@ -352,6 +351,49 @@ SELECT ?item ?wiki WHERE {
 """
 
 
+FACTS_QUERY = """
+SELECT ?item (MAX(?elv) AS ?el) (MIN(YEAR(?inc)) AS ?year) (MAX(?ar) AS ?area) (SAMPLE(?admL) AS ?adm)
+WHERE {
+  VALUES ?item { %s }
+  OPTIONAL { ?item p:P2044/psn:P2044/wikibase:quantityAmount ?elv }   # elevation, metres
+  OPTIONAL { ?item wdt:P571 ?inc }                                     # founded / established
+  OPTIONAL { ?item p:P2046/psn:P2046/wikibase:quantityAmount ?ar }    # area, square metres
+  OPTIONAL { ?item wdt:P131 ?a . ?a rdfs:label ?admL FILTER(LANG(?admL) = "en") }  # district or state
+}
+GROUP BY ?item
+"""
+
+
+def facts(net: Net, items: list[dict], log) -> None:
+    """Quick facts, fetched only for the shortlist: asking for them in the big box
+    queries made every one of 100,000 items pay for a slow lookup."""
+    got = 0
+    for batch in chunks(items, 200):
+        try:
+            rows = net.sparql(FACTS_QUERY % " ".join(f"wd:{it['id']}" for it in batch))
+        except Exception as ex:
+            log(f"  facts batch failed ({type(ex).__name__}); skipped")
+            continue
+        by = {it["id"]: it for it in batch}
+        for b in rows:
+            it = by.get(val(b, "item").rsplit("/", 1)[-1])
+            if not it:
+                continue
+            try:
+                if val(b, "el"):
+                    it["el"] = int(float(val(b, "el")))
+                if val(b, "year"):
+                    it["year"] = int(float(val(b, "year")))
+                if val(b, "area"):
+                    it["area"] = round(float(val(b, "area")) / 1e6, 1)  # km2
+                if val(b, "adm"):
+                    it["adm"] = val(b, "adm")
+                got += 1
+            except ValueError:
+                pass
+    log(f"facts: {got} places got quick facts")
+
+
 def real_links(net: Net, items: list[dict], log) -> None:
     """Count language links, ignoring bot-written Wikipedias."""
     for batch in chunks(items, 300):
@@ -373,7 +415,7 @@ def wiki_summaries(net: Net, items: list[dict], log) -> None:
         data = net.wiki({
             "action": "query", "titles": "|".join(batch), "redirects": "1",
             "prop": "extracts|pageimages|description",
-            "exintro": "1", "explaintext": "1", "exsentences": "3", "exlimit": "20",
+            "exintro": "1", "explaintext": "1", "exchars": "1200", "exlimit": "20",
             "piprop": "name", "pilicense": "free",
         })
         q = data.get("query", {})
@@ -385,12 +427,31 @@ def wiki_summaries(net: Net, items: list[dict], log) -> None:
             it = by_title.get(src)
             if not it or page.get("missing"):
                 continue
-            it["extract"] = clean_extract(page.get("extract", ""))
+            it["extract"], it["story"] = split_extract(page.get("extract", ""))
             if page.get("description"):
                 it["desc"] = page["description"]
             if page.get("pageimage"):
                 it["image"] = page["pageimage"]  # Wikipedia's lead photo wins
     log(f"wiki_summaries: {len(by_title)} articles")
+
+
+def split_extract(t: str) -> tuple[str, str]:
+    """A short lead (shown on cards and alerts) and the rest of the intro (the place sheet's story)."""
+    t = re.sub(r"\s*\([^()]*\)", "", t)
+    t = re.sub(r"\s+", " ", t).strip()
+    sentences = re.split(r"(?<=[.!?])\s+(?=[A-Z])", t)
+    lead, rest = "", []
+    for sn in sentences:
+        if not lead or len(lead) + len(sn) < 300:
+            lead = f"{lead} {sn}".strip()
+        else:
+            rest.append(sn)
+    story = " ".join(rest)
+    if len(story) > 900:
+        story = story[:900].rsplit(". ", 1)[0] + "."
+    if story.endswith("…") or (story and story[-1] not in ".!?"):
+        story = story.rsplit(". ", 1)[0] + "." if ". " in story else ""
+    return clean_extract(lead), story
 
 
 def clean_extract(t: str, limit: int = 360) -> str:
@@ -507,6 +568,13 @@ def record(it: dict) -> dict:
         r["d"] = it["desc"][:120]
     if it.get("extract"):
         r["x"] = it["extract"]
+    if it.get("story"):
+        r["xl"] = it["story"]
+    for k in ("year", "area", "adm"):
+        if it.get(k):
+            r[k] = it[k]
+    if it["cat"] == "city" and it.get("pop"):
+        r["pop"] = it["pop"]
     if it.get("img"):
         r["img"] = it["img"]
     if it.get("en"):
@@ -571,6 +639,7 @@ def run(net: Net, out: Path, report_path: Path, bbox=BBOX) -> int:
     log(f"filter: {len(cands)} candidates of {len(items)}")
 
     real_links(net, cands, log)
+    facts(net, cands, log)
     cands = [it for it in cands if it["en"] or it["langs"] >= 4]
     wiki_summaries(net, cands, log)
     image_credits(net, cands, log)

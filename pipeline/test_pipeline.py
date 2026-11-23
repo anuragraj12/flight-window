@@ -66,6 +66,16 @@ class FakeNet:
                     if r in bp.ROOTS:
                         out.append(b(cls=E + c, root=E + r))
             return out
+        if "wdt:P571" in q:
+            import re
+            out = []
+            for qid in re.findall(r"wd:(Q\d+)", q):
+                extra = next(i[6] for i in ITEMS if i[0] == qid)
+                if extra.get("el"):
+                    out.append(b(item=E + qid, el=extra["el"]))
+                if qid == "Q7":
+                    out.append(b(item=E + qid, year=1955, area=643000000, adm="Kodagu district"))
+            return out
         if "schema:isPartOf ?wiki" in q:
             import re
             out = []
@@ -85,7 +95,7 @@ class FakeNet:
             titles = p["titles"].split("|")
             pages = []
             for t in titles:
-                page = {"title": t, "extract": f"{t} (pronounced x) is notable. It is in India. More text here.",
+                page = {"title": t, "extract": f"{t} (pronounced x) is notable. It is in India. More text here. " + "A longer story sentence follows here with detail. " * 12,
                         "description": f"desc of {t}"}
                 if t != "Battle of Panipat":
                     page["pageimage"] = t.replace(" ", "_") + ".jpg"
@@ -124,6 +134,8 @@ def main():
         assert allp["Q3"]["c"] == "city" and allp["Q3"]["k"] == "city"
         assert allp["Q5"]["c"] == "works" and "img" not in allp["Q5"], "fair-use photo must be skipped"
         assert allp["Q7"]["img"]["by"] == "Some & One"
+        assert allp["Q7"]["year"] == 1955 and allp["Q7"]["area"] == 643.0 and allp["Q7"]["adm"] == "Kodagu district"
+        assert len(allp["Q2"]["x"]) <= 360 and len(allp["Q2"].get("xl", "")) > 100, (allp["Q2"]["x"], allp["Q2"].get("xl"))
         assert allp["Q11"]["el"] == 7816 and "el" not in allp["Q2"]
         assert any(v.get("peak") == 7816 for v in idx["tiles"].values())
         assert "img" not in allp["Q1"], "photo without licence info must be skipped"
