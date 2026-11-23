@@ -117,9 +117,11 @@ function addBox(set, z, lon, lat, km) {
 export function corridorTiles(path, plan, spots = []) {
   const set = new Set();
   const step = 4;
-  for (const { zmin, zmax, km } of plan) {
+  for (const { zmin, zmax, km, offset = 0 } of plan) {
     for (let s = 0; s <= path.total + step; s += step) {
-      const [lon, lat] = pointAt(path, s);
+      let [lon, lat] = pointAt(path, s);
+      // offset > 0 shifts the strip to the right of travel, < 0 to the left (the window side)
+      if (offset) [lon, lat] = destination([lon, lat], headingAt(path, s) + (offset > 0 ? 90 : -90), Math.abs(offset));
       for (let z = zmin; z <= zmax; z++) addBox(set, z, lon, lat, km);
     }
   }

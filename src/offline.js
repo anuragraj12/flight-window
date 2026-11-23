@@ -167,11 +167,18 @@ export const DEM_URL = 'https://s3.amazonaws.com/elevation-tiles-prod/terrarium/
 export const NIGHT_URL = 'https://gibs.earthdata.nasa.gov/wmts/epsg3857/best/VIIRS_Black_Marble/default/2016-01-01/GoogleMapsCompatible_Level8/{z}/{y}/{x}.png';
 const DEM_MAX = 9;
 const SAT_MAX = 14; // z13 along the route, z14 (~10 m/pixel, the imagery's full detail) around airports
-// Extra-detail satellite strip either side of the route, on top of PLAN.
-export const HI_PLAN = [
-  { zmin: 12, zmax: 12, km: 32 },
-  { zmin: 13, zmax: 13, km: 9 },
-];
+// Extra-sharp satellite strip, downloaded after the flight is ready to use. From a window seat you
+// look sideways, so only the band you can actually see is sharpened: ~5–55 km out on your side.
+export function sharpPlan(side) {
+  const band = (sign) => [
+    { zmin: 12, zmax: 12, km: 25, offset: sign * 30 },
+    { zmin: 13, zmax: 13, km: 9, offset: sign * 17 },
+  ];
+  if (side === 'L') return band(-1);
+  if (side === 'R') return band(1);
+  return [...band(-1), ...band(1)];
+}
+export const HI_PLAN = sharpPlan('');
 
 export const SKY = {
   day: { 'sky-color': '#3f86d6', 'horizon-color': '#cfe2f6', 'fog-color': '#dbe6f2', 'sky-horizon-blend': 0.7, 'horizon-fog-blend': 0.6, 'fog-ground-blend': 0.55, 'atmosphere-blend': 0 },
@@ -281,45 +288,58 @@ export function buildUrlList(style, path, spots, tiles = corridorTiles(path, PLA
   return { urls: urls.map(canon), tileCount, estBytes };
 }
 
-export async function prefetch(urls, onProgress, signal) {
+// Many small files from far-away servers: speed comes from keeping lots of requests in flight,
+// spread across all hosts at once, and touching each file only once.
+export async function prefetch(urls, onProgress, { signal, concurrency = 24 } = {}) {
   const cache = await openTiles();
-  let next = 0, done = 0, bytes = 0;
+  const have = new Set((await cache.keys()).map((r) => r.url));
+  const total = urls.length;
+  let done = 0, bytes = 0;
   const failedUrls = [];
+  // round-robin by host so no single server (or its connection limit) holds everything up
+  const byHost = new Map();
+  for (const u of urls) {
+    if (have.has(u)) { done++; continue; }
+    const h = new URL(u).host;
+    if (!byHost.has(h)) byHost.set(h, []);
+    byHost.get(h).push(u);
+  }
+  const queues = [...byHost.values()];
+  const queue = [];
+  for (let i = 0; queues.some((q) => i < q.length); i++) for (const q of queues) if (i < q.length) queue.push(q[i]);
+  onProgress?.({ done, total, bytes, failed: 0 });
+  let next = 0;
   async function worker() {
-    while (next < urls.length) {
+    while (next < queue.length) {
       if (signal?.aborted) return;
-      const u = urls[next++];
+      const u = queue[next++];
       try {
-        const hit = await cache.match(u, { ignoreVary: true });
-        if (!hit) {
-          let res;
-          for (let attempt = 0; attempt < 3; attempt++) {
-            try { res = await fetch(u, { mode: 'cors', signal }); break; }
-            catch (e) { if (e.name === 'AbortError') return; if (attempt === 2) throw e; await new Promise((r) => setTimeout(r, 800 * (attempt + 1))); }
-          }
-          if (res.ok) {
-            const buf = await res.clone().arrayBuffer();
-            bytes += buf.byteLength;
-            await cache.put(u, res);
-          } else if (res.status !== 404 && res.status !== 204) failedUrls.push(u);
+        let res;
+        for (let attempt = 0; attempt < 3; attempt++) {
+          try { res = await fetch(u, { mode: 'cors', signal }); break; }
+          catch (e) { if (e.name === 'AbortError') return; if (attempt === 2) throw e; await new Promise((r) => setTimeout(r, 800 * (attempt + 1))); }
         }
+        if (res.ok) {
+          const blob = await res.blob();
+          bytes += blob.size;
+          await cache.put(u, new Response(blob, { headers: { 'content-type': res.headers.get('content-type') || 'application/octet-stream' } }));
+        } else if (res.status !== 404 && res.status !== 204) failedUrls.push(u);
       } catch {
         failedUrls.push(u);
       }
       done++;
-      onProgress?.({ done, total: urls.length, bytes, failed: failedUrls.length });
+      onProgress?.({ done, total, bytes, failed: failedUrls.length });
     }
   }
-  await Promise.all(Array.from({ length: 8 }, worker));
+  await Promise.all(Array.from({ length: Math.min(concurrency, queue.length || 1) }, worker));
   return { done, bytes, failed: failedUrls.length, failedUrls };
 }
 
 // URLs from the list that are not saved yet.
 export async function missingUrls(urls) {
   const cache = await openTiles();
-  const out = [];
-  for (const u of urls) if (!(await cache.match(u, { ignoreVary: true }))) out.push(u);
-  return out;
+  const have = new Set((await cache.keys()).map((r) => r.url));
+  return urls.filter((u) => !have.has(u));
 }
 
 export const openTileCache = () => openTiles();

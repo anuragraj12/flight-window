@@ -6,7 +6,7 @@ import { registerSW } from 'virtual:pwa-register';
 import { dist, bearing, greatCircle, buildPath, pointAt, headingAt, project, sideOf, corridorTiles, destination, angDiff } from './geo.js';
 import {
   registerProtocol, getStyle, buildStyle, buildEarthStyle, saveStyle, loadSavedStyle,
-  buildUrlList, prefetch, clearAll, fontStacks, MAX_Z, PLAN, HI_PLAN, SKY, areaAround, openTileCache, missingUrls,
+  buildUrlList, prefetch, clearAll, fontStacks, MAX_Z, PLAN, sharpPlan, SKY, areaAround, openTileCache, missingUrls,
 } from './offline.js';
 import { makeStory } from './story.js';
 import { extractTileFeatures, buildEvents, eventTitle, eventSub, summary, overlayData, ICON, inPolys } from './features.js';
@@ -307,11 +307,14 @@ function renderHome() {
         <div class="trip-codes">${esc(t.from.code)} <span>→</span> ${esc(t.to.code)}</div>
         <div class="trip-sub">${esc(t.airline || '')}${t.airline ? ' · ' : ''}${esc(ticketLine(t) || `${t.from.city} to ${t.to.city}`)}</div>
         ${t.pending
-          ? `<div class="trip-sub warn" data-dl-text="${esc(t.id)}">${downloads.has(t.id) ? 'Downloading…' : 'Download paused'} · ${Math.round(((t.done || 0) / (t.files || 1)) * 100)}%</div>
+          ? `<div class="trip-sub warn" data-dl-text="${esc(t.id)}">${downloads.has(t.id) ? 'Getting ready…' : 'Download paused'} · ${Math.round(((t.done || 0) / (t.files || 1)) * 100)}%</div>
              <div class="bar thin"><div data-dl-bar="${esc(t.id)}" style="width:${((t.done || 0) / (t.files || 1)) * 100}%"></div></div>`
-          : `<div class="trip-sub ok">✓ Saved offline${t.bytes ? ` · ${fmtMB(t.bytes)}` : ''}${t.earth ? ' · 3D view' : ''}</div>`}
+          : t.sharpPending
+            ? `<div class="trip-sub ok" data-dl-text="${esc(t.id)}">✓ Ready to fly · ${downloads.has(t.id) ? 'sharpening' : 'sharpening paused'} ${Math.round(((t.sharpDone || 0) / (t.sharpFiles || 1)) * 100)}%</div>
+               <div class="bar thin"><div data-dl-bar="${esc(t.id)}" style="width:${((t.sharpDone || 0) / (t.sharpFiles || 1)) * 100}%"></div></div>`
+            : `<div class="trip-sub ok">✓ Saved offline${t.bytes ? ` · ${fmtMB(t.bytes)}` : ''}${t.earth ? ' · 3D view' : ''}</div>`}
       </div>
-      ${t.pending && !downloads.has(t.id) ? `<button class="small" data-action="resume" data-id="${esc(t.id)}">Resume</button>` : ''}
+      ${(t.pending || t.sharpPending) && !downloads.has(t.id) ? `<button class="small" data-action="resume" data-id="${esc(t.id)}">Resume</button>` : ''}
       <button class="ghost small" data-action="delete" data-id="${esc(t.id)}" aria-label="Delete">✕</button>
     </div>`).join('');
   app.innerHTML = `
@@ -459,9 +462,12 @@ async function preview(from, to, meta) {
   const pickedSide = meta.side || (si0 && si0.side !== 'C' ? si0.side : '');
   const si = pickedSide ? { ...(si0 || { kind: 'window' }), side: pickedSide } : si0;
   const { spots, all } = routeSpots(from, to);
-  const tiles = corridorTiles(route.path, [...PLAN, ...HI_PLAN], all);
-  const vec = state.vectorStyle ? buildUrlList(state.vectorStyle, route.path, spots, tiles) : { estBytes: 0 };
-  const earth = buildUrlList(buildEarthStyle(state.vectorStyle, hiAreasFor(from, to)), route.path, spots, tiles, { skipVector: true });
+  const tiles = corridorTiles(route.path, PLAN, all);
+  const vec = state.vectorStyle ? buildUrlList(state.vectorStyle, route.path, spots, tiles) : { estBytes: 0, urls: [] };
+  const eStyle = buildEarthStyle(state.vectorStyle, hiAreasFor(from, to));
+  const earth = buildUrlList(eStyle, route.path, spots, tiles, { skipVector: true });
+  const sharp = buildUrlList(eStyle, route.path, spots, corridorTiles(route.path, sharpPlan(pickedSide), []), { skipVector: true });
+  const readyIn = (files) => Math.max(1, Math.round(files / 40 / 60));
   let onRoute = '';
   try {
     const ev = buildEvents(route.path, await loadGeo());
@@ -488,44 +494,55 @@ async function preview(from, to, meta) {
     </div>
     ${seatMsg}
     ${onRoute}
-    <label class="check"><input type="checkbox" id="opt-earth" checked><span><b>3D satellite & window view</b><small>Sharp satellite ground, terrain and glowing night city lights · +${fmtMB(earth.estBytes)}</small></span></label>
-    <button class="primary wide" id="btn-save">Save for offline · ~<span id="size">${fmtMB(vec.estBytes + earth.estBytes)}</span></button>
+    <label class="check"><input type="checkbox" id="opt-earth" checked><span><b>3D satellite & window view</b><small>Satellite ground, terrain and glowing night city lights · +${fmtMB(earth.estBytes)}. Extra-sharp ground on ${pickedSide ? `your ${sideWord(pickedSide)}` : 'each'} side (+${fmtMB(sharp.estBytes)}) keeps loading after you're ready.</small></span></label>
+    <button class="primary wide" id="btn-save">Save · ready to fly in ~<span id="size">${readyIn(vec.urls.length + earth.urls.length)}</span> min</button>
+    <div class="note tiny">~<span id="mb">${fmtMB(vec.estBytes + earth.estBytes)}</span> on Wi-Fi${pickedSide ? '' : '. Pick your side above to download less'}</div>
     <div id="save-progress"></div>`;
-  $('#opt-earth').onchange = (e) => { $('#size').textContent = fmtMB(vec.estBytes + (e.target.checked ? earth.estBytes : 0)); };
+  $('#opt-earth').onchange = (e) => {
+    const on = e.target.checked;
+    $('#size').textContent = readyIn(vec.urls.length + (on ? earth.urls.length : 0));
+    $('#mb').textContent = fmtMB(vec.estBytes + (on ? earth.estBytes : 0));
+  };
   $('#btn-save').onclick = () => saveTrip(route, meta, $('#opt-earth').checked);
 }
 
 async function saveTrip(route, meta, withEarth) {
   const btn = $('#btn-save'), box = $('#save-progress');
-  btn.disabled = true; btn.textContent = 'Saving…';
+  btn.disabled = true; btn.textContent = 'Preparing…';
   try {
     await navigator.serviceWorker?.ready;
     const style = await buildStyle();
+    const si = seatInfo(meta.seat);
+    const side = meta.side || (si && si.side !== 'C' ? si.side : '');
     const { spots, all } = routeSpots(route.from, route.to);
-    const tiles = corridorTiles(route.path, [...PLAN, ...HI_PLAN], all);
-    const urls = new Set(buildUrlList(style, route.path, spots, tiles).urls);
+    const tiles = corridorTiles(route.path, PLAN, all);
+    const ess = new Set(buildUrlList(style, route.path, spots, tiles).urls);
     const earthStyle = withEarth ? buildEarthStyle(style, hiAreasFor(route.from, route.to)) : null;
-    if (earthStyle) buildUrlList(earthStyle, route.path, spots, tiles).urls.forEach((u) => urls.add(u));
+    let sharp = [];
+    if (earthStyle) {
+      buildUrlList(earthStyle, route.path, spots, tiles).urls.forEach((u) => ess.add(u));
+      sharp = buildUrlList(earthStyle, route.path, spots, corridorTiles(route.path, sharpPlan(side), []), { skipVector: true }).urls.filter((u) => !ess.has(u));
+    }
     const id = `${route.from.code}-${route.to.code}-${Date.now().toString(36)}`;
     await saveStyle(id, style);
     if (earthStyle) await saveStyle(`${id}-earth`, earthStyle);
     await Promise.all(['/data/places.json', '/data/airports.json', '/data/airlines.json', '/data/geo.json'].map((u) => fetch(u).catch(() => {})));
-    const list = [...urls];
-    const si = seatInfo(meta.seat);
+    const lists = { ess: [...ess], sharp };
     const trip = {
       id, from: route.from, to: route.to, total: route.path.total,
       carrier: meta.carrier || '', flight: meta.flight || '', airline: meta.airline || (meta.carrier && state.airlines?.[meta.carrier]) || '',
-      seat: meta.seat || '', side: meta.side || (si && si.side !== 'C' ? si.side : ''), date: meta.date || null,
-      files: list.length, done: 0, bytes: 0, failed: 0, pending: true, earth: !!earthStyle, hi: true, createdAt: Date.now(),
+      seat: meta.seat || '', side, date: meta.date || null,
+      files: lists.ess.length, done: 0, sharpFiles: sharp.length, sharpDone: 0, bytes: 0, failed: 0,
+      pending: true, sharpPending: sharp.length > 0, earth: !!earthStyle, hi: true, createdAt: Date.now(),
     };
-    await saveStyle(`${id}-urls`, list);
+    await saveStyle(`${id}-urls`, lists);
     state.trips = [trip, ...state.trips.filter((t) => !(t.from.code === trip.from.code && t.to.code === trip.to.code))];
     saveTrips();
     box.dataset.trip = id;
-    box.innerHTML = `<div class="bar"><div data-dl-bar="${esc(id)}"></div></div><div class="note" data-dl-text="${esc(id)}">Downloading maps…</div>
-      <div class="note tiny">You can leave the app. ${'BackgroundFetchManager' in window ? 'It keeps downloading in the background.' : 'Keep it open for the fastest download; if you leave, it carries on from where it stopped when you come back.'}</div>`;
+    box.innerHTML = `<div class="bar"><div data-dl-bar="${esc(id)}"></div></div><div class="note" data-dl-text="${esc(id)}">Getting your flight ready…</div>
+      <div class="note tiny">${'BackgroundFetchManager' in window ? 'You can leave the app: it keeps downloading in the background.' : 'If you leave the app, it carries on from where it stopped when you come back.'}</div>`;
     btn.remove();
-    await runDownload(trip, list);
+    await runDownload(trip, lists);
   } catch (e) {
     console.error(e);
     btn.disabled = false; btn.textContent = 'Try again';
@@ -540,40 +557,58 @@ const waitVisible = () => (document.visibilityState === 'visible' ? Promise.reso
   const f = () => { if (document.visibilityState === 'visible') { document.removeEventListener('visibilitychange', f); r(); } };
   document.addEventListener('visibilitychange', f);
 }));
+const normLists = (l) => (Array.isArray(l) ? { ess: l, sharp: [] } : { ess: l?.ess || [], sharp: l?.sharp || [] });
 
 function dlUI(id, text, frac) {
   document.querySelectorAll(`[data-dl-text="${id}"]`).forEach((el) => { el.textContent = text; });
   if (frac != null) document.querySelectorAll(`[data-dl-bar="${id}"]`).forEach((el) => { el.style.width = `${Math.min(100, frac * 100)}%`; });
 }
 
-function runDownload(trip, list) {
+// Download a list, then retry failures a few times (waiting until the app is visible again).
+async function fetchAll(list, onProgress) {
+  let res = await prefetch(list, onProgress);
+  let bytes = res.bytes;
+  for (let round = 0; res.failedUrls.length && round < 5; round++) {
+    await waitVisible();
+    await sleep(1500 * (round + 1));
+    res = await prefetch(res.failedUrls, () => {});
+    bytes += res.bytes;
+  }
+  return { bytes, failed: res.failedUrls.length };
+}
+
+function runDownload(trip, lists) {
   if (downloads.has(trip.id)) return downloads.get(trip.id);
+  const { ess, sharp } = normLists(lists);
   const job = (async () => {
     requestWake();
     let lastSave = 0;
-    const onProgress = ({ done, total, bytes }) => {
-      trip.done = done;
-      dlUI(trip.id, `Downloading maps… ${Math.round((done / total) * 100)}% · ${fmtMB((trip.bytes || 0) + bytes)}`, done / total);
-      if (Date.now() - lastSave > 3000) { lastSave = Date.now(); saveTrips(); }
-    };
-    if (await startBackgroundFetch(trip, list).catch(() => false)) await waitBackgroundFetch(trip);
-    let res = await prefetch(list, onProgress);
-    let bytes = res.bytes;
-    for (let round = 0; res.failedUrls.length && round < 5; round++) {
-      await waitVisible();
-      dlUI(trip.id, `Retrying ${res.failedUrls.length} files…`, null);
-      await sleep(1500 * (round + 1));
-      res = await prefetch(res.failedUrls, () => {});
-      bytes += res.bytes;
+    const persist = () => { if (Date.now() - lastSave > 3000) { lastSave = Date.now(); saveTrips(); } };
+    if (await startBackgroundFetch(trip, [...(trip.pending ? ess : []), ...(trip.sharpPending ? sharp : [])]).catch(() => false)) await waitBackgroundFetch(trip);
+    if (trip.pending) {
+      const r = await fetchAll(ess, ({ done, total, bytes }) => {
+        trip.done = done; persist();
+        dlUI(trip.id, `Getting your flight ready… ${Math.round((done / total) * 100)}% · ${fmtMB((trip.bytes || 0) + bytes)}`, done / total);
+      });
+      await finishEssentials(trip, ess, r.bytes, r.failed);
     }
-    await finishTrip(trip, list, bytes, res.failedUrls.length);
+    if (trip.sharpPending && sharp.length) {
+      const r = await fetchAll(sharp, ({ done, total }) => {
+        trip.sharpDone = done; persist();
+        dlUI(trip.id, `✓ Ready to fly · sharpening your window view ${Math.round((done / total) * 100)}%`, done / total);
+      });
+      Object.assign(trip, { sharpPending: false, sharpDone: sharp.length, bytes: (trip.bytes || 0) + r.bytes });
+      saveTrips();
+      dlUI(trip.id, '✓ Saved, with extra-sharp ground on your side', 1);
+      if (!state.route && !state.ticket && document.querySelector('.home')) renderHome();
+    }
   })().catch((e) => { console.warn(e); dlUI(trip.id, 'Download paused · it resumes when you reopen the app', null); })
     .finally(() => { downloads.delete(trip.id); if (!state.route) releaseWake(); });
   downloads.set(trip.id, job);
   return job;
 }
 
-async function finishTrip(trip, list, bytes, failed) {
+async function finishEssentials(trip, list, bytes, failed) {
   dlUI(trip.id, 'Finding rivers, national parks and reserves on your route…', 1);
   try {
     const style = await loadSavedStyle(trip.id);
@@ -589,7 +624,8 @@ async function finishTrip(trip, list, bytes, failed) {
   const pct = Math.round((failed / list.length) * 100);
   const box = document.querySelector(`#save-progress[data-trip="${trip.id}"]`);
   if (box) {
-    box.innerHTML = `<div class="note ${pct > 10 ? 'warn' : 'ok'}">${pct > 10 ? `Saved, but ${failed} of ${list.length} map files failed. Try saving again on better Wi-Fi.` : '✓ Saved. It will work in flight mode.'}</div>
+    box.innerHTML = `<div class="note ${pct > 10 ? 'warn' : 'ok'}">${pct > 10 ? `Saved, but ${failed} of ${list.length} map files failed. Try again on better Wi-Fi.` : '✓ Ready to fly. It works in flight mode.'}</div>
+      ${trip.sharpPending ? `<div class="bar thin"><div data-dl-bar="${esc(trip.id)}"></div></div><div class="note tiny" data-dl-text="${esc(trip.id)}">Sharpening your window view…</div>` : ''}
       <button class="primary wide" data-action="open" data-id="${esc(trip.id)}">Open flight view</button>`;
   } else if (!state.route && !state.ticket && document.querySelector('.home')) renderHome();
 }
@@ -597,9 +633,8 @@ async function finishTrip(trip, list, bytes, failed) {
 // Android / Chrome: hand the download to the browser so it continues with the app closed.
 async function startBackgroundFetch(trip, list) {
   const reg = await navigator.serviceWorker?.ready;
-  if (!reg?.backgroundFetch) return false;
+  if (!reg?.backgroundFetch || !list.length) return false;
   if (await reg.backgroundFetch.get(trip.id)) return true;
-  dlUI(trip.id, 'Preparing download…', null);
   const missing = await missingUrls(list);
   if (missing.length < 40) return false;
   await reg.backgroundFetch.fetch(trip.id, missing.map((u) => new Request(u, { mode: 'cors' })), {
@@ -617,7 +652,7 @@ async function waitBackgroundFetch(trip) {
       const tick = () => {
         if (bg.downloaded !== last) { last = bg.downloaded; lastChange = Date.now(); }
         dlUI(trip.id, `Downloading in the background · ${fmtMB(bg.downloaded)} · you can leave the app`, null);
-        if (bg.result) { done(true); }
+        if (bg.result) done(true);
       };
       // if it makes no progress for 45 s while you're watching, take over in the foreground
       const timer = setInterval(() => {
@@ -635,9 +670,9 @@ async function waitBackgroundFetch(trip) {
 
 async function resumePending() {
   if (!navigator.onLine) return;
-  for (const t of state.trips.filter((x) => x.pending && !downloads.has(x.id))) {
-    const list = await loadSavedStyle(`${t.id}-urls`);
-    if (list?.length) runDownload(t, list); else { t.pending = false; saveTrips(); }
+  for (const t of state.trips.filter((x) => (x.pending || x.sharpPending) && !downloads.has(x.id))) {
+    const lists = await loadSavedStyle(`${t.id}-urls`);
+    if (lists) runDownload(t, lists); else { t.pending = false; t.sharpPending = false; saveTrips(); }
   }
   if (!state.route && !state.ticket && document.querySelector('.home')) renderHome();
 }
@@ -1269,8 +1304,8 @@ app.addEventListener('click', async (e) => {
     if (state.planMeta) { state.planMeta.side = el.dataset.s; state.planGo?.(); }
   } else if (a === 'resume') {
     const t = state.trips.find((x) => x.id === el.dataset.id);
-    const list = t && await loadSavedStyle(`${t.id}-urls`);
-    if (t && list) { runDownload(t, list); renderHome(); }
+    const lists = t && await loadSavedStyle(`${t.id}-urls`);
+    if (t && lists) { runDownload(t, lists); renderHome(); }
   } else if (a === 'story') { openStory();
   } else if (a === 'open') openTrip(el.dataset.id);
   else if (a === 'delete') {
