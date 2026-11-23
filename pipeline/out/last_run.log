@@ -1,22 +1,23 @@
-[    59s]   20 boxes done, 5526 items, 269 to go
-[   124s]   40 boxes done, 12706 items, 249 to go
-[   246s]   60 boxes done, 19837 items, 229 to go
-[   314s]   80 boxes done, 24284 items, 209 to go
-[   539s]   100 boxes done, 30347 items, 189 to go
-[   559s]   box 72.0,17.0 size 2.0: JSONDecodeError, splitting
-[   724s]   120 boxes done, 36452 items, 172 to go
-[   852s]   140 boxes done, 41078 items, 152 to go
-[  1012s]   160 boxes done, 51760 items, 132 to go
-[  1197s]   180 boxes done, 64814 items, 112 to go
-[  1388s]   200 boxes done, 81445 items, 92 to go
-[  1502s]   220 boxes done, 88678 items, 72 to go
-[  1656s]   240 boxes done, 94171 items, 52 to go
-[  1742s]   260 boxes done, 98321 items, 32 to go
-[  1786s]   280 boxes done, 100205 items, 12 to go
-[  1926s] extract: 100385 items from 292 boxes (1 splits, 0 failed)
-[  2029s]   class batch failed (Expecting property name enclosed in double quotes: line 1314 column 3 (char 32768)); retrying in halves
-[  2307s]   class batch failed (Unterminated string starting at: line 1309 column 19 (char 32748)); retrying in halves
-[  2515s] classify: 2346 distinct types, 454 map to a category
-[  2515s] filter: 12658 candidates of 100385
-[  2795s] real_links: counted for 12658 places
-[  3065s] wiki_summaries: 12598 articles
+[   206s]   20 boxes done, 5526 items, 269 to go
+[   297s]   40 boxes done, 12706 items, 249 to go
+[   403s]   60 boxes done, 19837 items, 229 to go
+[   455s]   80 boxes done, 24284 items, 209 to go
+[   520s]   100 boxes done, 30348 items, 189 to go
+[   676s]   120 boxes done, 36874 items, 169 to go
+[   903s]   140 boxes done, 42204 items, 149 to go
+[   983s]   160 boxes done, 53146 items, 129 to go
+[  1069s]   180 boxes done, 68693 items, 109 to go
+[  1163s]   200 boxes done, 83301 items, 89 to go
+[  1219s]   220 boxes done, 88936 items, 69 to go
+[  1331s]   240 boxes done, 94889 items, 49 to go
+[  1530s]   260 boxes done, 99010 items, 29 to go
+[  1568s]   280 boxes done, 100322 items, 9 to go
+[  1583s] extract: 100387 items from 289 boxes (0 splits, 0 failed)
+[  2088s]   class batch failed (Response ended prematurely); retrying in halves
+[  2184s] classify: 2346 distinct types, 454 map to a category
+[  2184s] filter: 12658 candidates of 100387
+[  2297s] real_links: counted for 12658 places
+[  2468s] facts: 12658 places got quick facts
+[  2663s] wiki_summaries: 12598 articles
+[  2787s] image_credits: 9813 places have a usable photo (0 odd records skipped)
+[  2787s] load: 12632 places in 146 tiles, 12.6 MB

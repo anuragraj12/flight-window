@@ -1,10 +1,10 @@
 # Place pack report, 2026-11-23
 
-- Places: **12632** in 146 tiles, 8878 KB of JSON
-- Time: 19.8 min; calls: {'sparql': 349, 'wiki': 821}
-- With photo: 9811, with summary: 12556, UNESCO sites: 56
+- Places: **12632** in 146 tiles, 12265 KB of JSON
+- Time: 46.4 min; calls: {'sparql': 416, 'wiki': 821}
+- With photo: 9813, with summary: 12556, UNESCO sites: 56
 
-Score spread: 0-9: 326 10-19: 3487 20-29: 4073 30-39: 2073 40-49: 1129 50-59: 743 60-69: 402 70-79: 236 80-89: 117 90-99: 40 100: 6
+Score spread: 0-9: 326 10-19: 3486 20-29: 4072 30-39: 2075 40-49: 1130 50-59: 742 60-69: 402 70-79: 236 80-89: 117 90-99: 40 100: 6
 
 ## Categories
 
@@ -63,25 +63,27 @@ Score spread: 0-9: 326 10-19: 3487 20-29: 4073 30-39: 2073 40-49: 1129 50-59: 74
 ## Log
 
 ```
-[    32s]   20 boxes done, 5526 items, 269 to go
-[    63s]   40 boxes done, 12706 items, 249 to go
-[    99s]   60 boxes done, 19836 items, 229 to go
-[   129s]   80 boxes done, 24283 items, 209 to go
-[   158s]   100 boxes done, 30346 items, 189 to go
-[   189s]   120 boxes done, 36871 items, 169 to go
-[   220s]   140 boxes done, 42201 items, 149 to go
-[   257s]   160 boxes done, 53143 items, 129 to go
-[   301s]   180 boxes done, 68690 items, 109 to go
-[   350s]   200 boxes done, 83298 items, 89 to go
-[   382s]   220 boxes done, 88933 items, 69 to go
-[   410s]   240 boxes done, 94886 items, 49 to go
-[   440s]   260 boxes done, 99007 items, 29 to go
-[   464s]   280 boxes done, 100319 items, 9 to go
-[   475s] extract: 100384 items from 289 boxes (0 splits, 0 failed)
-[   650s] classify: 2346 distinct types, 454 map to a category
-[   650s] filter: 12658 candidates of 100384
-[   705s] real_links: counted for 12658 places
-[   961s] wiki_summaries: 12598 articles
-[  1186s] image_credits: 9811 places have a usable photo (0 odd records skipped)
-[  1186s] load: 12632 places in 146 tiles, 9.1 MB
+[   206s]   20 boxes done, 5526 items, 269 to go
+[   297s]   40 boxes done, 12706 items, 249 to go
+[   403s]   60 boxes done, 19837 items, 229 to go
+[   455s]   80 boxes done, 24284 items, 209 to go
+[   520s]   100 boxes done, 30348 items, 189 to go
+[   676s]   120 boxes done, 36874 items, 169 to go
+[   903s]   140 boxes done, 42204 items, 149 to go
+[   983s]   160 boxes done, 53146 items, 129 to go
+[  1069s]   180 boxes done, 68693 items, 109 to go
+[  1163s]   200 boxes done, 83301 items, 89 to go
+[  1219s]   220 boxes done, 88936 items, 69 to go
+[  1331s]   240 boxes done, 94889 items, 49 to go
+[  1530s]   260 boxes done, 99010 items, 29 to go
+[  1568s]   280 boxes done, 100322 items, 9 to go
+[  1583s] extract: 100387 items from 289 boxes (0 splits, 0 failed)
+[  2088s]   class batch failed (Response ended prematurely); retrying in halves
+[  2184s] classify: 2346 distinct types, 454 map to a category
+[  2184s] filter: 12658 candidates of 100387
+[  2297s] real_links: counted for 12658 places
+[  2468s] facts: 12658 places got quick facts
+[  2663s] wiki_summaries: 12598 articles
+[  2787s] image_credits: 9813 places have a usable photo (0 odd records skipped)
+[  2787s] load: 12632 places in 146 tiles, 12.6 MB
 ```
