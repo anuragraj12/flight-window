@@ -11,6 +11,7 @@ import {
 import { makeStory } from './story.js';
 import { extractTileFeatures, buildEvents, eventTitle, eventSub, summary, overlayData, ICON, inPolys } from './features.js';
 import { readTicket, seatInfo } from './boarding.js';
+import { routePlaces, pickFeatured, categoryCounts, imageUrls, attachPlaces, CAT, ROUTE_KM } from './places.js';
 
 maplibregl.setWorkerUrl(workerUrl);
 registerSW({ immediate: true });
@@ -43,6 +44,7 @@ const state = {
   dockOpen: false, frame: true, simSpeed: 1, simRunning: false,
   events: [], feats: [], featData: null, alerted: new Set(), zoomBias: 0, userZooming: false,
   gpsWanted: false, lastFix: null, geo: null,
+  featured: [], planFeatured: [], alertItems: [],
 };
 
 function loadTrips() { try { return JSON.parse(localStorage.getItem('fw-trips') || '[]'); } catch { return []; } }
@@ -82,8 +84,11 @@ function searchAirports(q) {
 // ---------- route + points of interest ----------
 async function makeRoute(from, to) {
   const path = buildPath(greatCircle([from.lon, from.lat], [to.lon, to.lat], 10));
-  const pois = await poisFor(path);
-  return { from, to, path, pois, sides: sideScore(pois) };
+  const [pois, places] = await Promise.all([
+    poisFor(path),
+    routePlaces(path).catch((e) => { console.warn('place packs unavailable', e); return []; }),
+  ]);
+  return { from, to, path, pois, places, sides: sideScore(pois, places) };
 }
 
 async function poisFor(path) {
@@ -116,8 +121,12 @@ async function poisFor(path) {
 }
 const placeLabel = (o) => (o.kind === 'm' && o.val ? `${o.name} (${o.val.toLocaleString()} m)` : o.name);
 
-function sideScore(pois) {
+function sideScore(pois, places = []) {
   const s = { L: 0, R: 0, nL: 0, nR: 0 };
+  if (places.length) {
+    for (const p of places) if (p.d >= 4 && p.d <= 60) { s[p.side] += p.s / 25; s[`n${p.side}`]++; }
+    return s;
+  }
   for (const p of pois) {
     if (p.d > 100) continue;
     s[p.side] += p.kind === 'c' ? Math.max(0.5, Math.log10(p.val + 10) - 3) : 2;
@@ -126,6 +135,97 @@ function sideScore(pois) {
   return s;
 }
 const flightHours = (km) => km / 800 + 0.45;
+const sinceTakeoff = (along) => fmtDur(along / 800 + 0.15);
+
+// ---------- featured places ----------
+function featuredFor(route, side, night) {
+  if (!route?.places?.length) return [];
+  return pickFeatured(route.places, { total: route.path.total, hours: flightHours(route.path.total), side, night });
+}
+const placeById = (id) => state.route?.places?.find((p) => p.id === id);
+const kindLabel = (p) => (p.k ? p.k[0].toUpperCase() + p.k.slice(1) : CAT[p.c]?.label || '');
+const sideTag = (p, s = p.side) => (p.d < 5 ? 'BELOW' : s === 'L' ? 'LEFT' : 'RIGHT');
+
+function placeCard(p) {
+  const c = CAT[p.c] || {};
+  return `<button class="pcard" data-action="place" data-id="${esc(p.id)}">
+    <div class="pimg">${p.img ? `<img src="${esc(p.img.u)}" alt="" loading="lazy">` : `<span class="pico">${c.icon || '📍'}</span>`}
+      <span class="badge ${p.d < 5 ? 'B' : p.side}">${sideTag(p)}</span>${p.u ? '<span class="unesco" title="UNESCO World Heritage Site">UNESCO</span>' : ''}</div>
+    <div class="pbody"><b>${esc(p.n)}</b><small>${c.icon || ''} ${esc(kindLabel(p))} · ${sinceTakeoff(p.along)} in</small></div>
+  </button>`;
+}
+
+function featuredHtml(route, feat, night) {
+  if (!route.places?.length) return '';
+  const cats = categoryCounts(route.places).map(([c, n]) => `<span>${CAT[c]?.icon || ''} ${n} ${esc((CAT[c]?.label || c).toLowerCase())}</span>`).join('');
+  return `<div class="featured">
+    <div class="feat-head"><div><b>Featured along your flight</b><small>${feat.length} picked for your ${night ? 'night' : 'day'} flight · ${route.places.length.toLocaleString()} places within ${ROUTE_KM} km</small></div>
+      <div class="seg small"><button data-action="plan-time" data-n="0" class="${night ? '' : 'on'}">☀ Day</button><button data-action="plan-time" data-n="1" class="${night ? 'on' : ''}">☾ Night</button></div></div>
+    <div class="cards">${feat.map(placeCard).join('') || '<div class="note">Nothing stands out on this route.</div>'}</div>
+    <div class="cat-chips">${cats}</div>
+  </div>`;
+}
+
+function setupPlaces() {
+  const r = state.route;
+  state.featured = featuredFor(r, mySide(), state.night);
+  attachPlaces(state.events, r?.places || []);
+  state.alertItems = planAlerts();
+}
+
+const evKey = (e) => (e.type === 's' ? `s:${e.name}` : `${e.type}:${e.name}:${Math.round(e.start)}`);
+// About 6 alerts an hour: the most interesting moments, spaced out along the flight.
+function planAlerts() {
+  const r = state.route;
+  if (!r) return [];
+  const total = r.path.total;
+  const items = [];
+  for (const e of state.events) {
+    if (e.type === 's' && e.origin) continue;
+    const prio = { t: 100, r: 55, p: 55, l: 45, k: 45, s: 40, g: 35 }[e.type] ?? 30;
+    items.push({ start: e.start, key: evKey(e), prio: prio + (e.place ? 15 : 0), e });
+  }
+  for (const p of state.featured) items.push({ start: p.along, key: `pl:${p.id}`, prio: p.f, p });
+  const max = Math.max(3, Math.round(flightHours(total) * 6));
+  const gap = (total / max) * 0.6;
+  const chosen = [];
+  for (const it of items.sort((a, b) => b.prio - a.prio)) {
+    if (chosen.length >= max) break;
+    if (chosen.some((c) => Math.abs(c.start - it.start) < gap)) continue;
+    chosen.push(it);
+  }
+  return chosen.sort((a, b) => a.start - b.start);
+}
+
+function openPlace(id) {
+  const p = placeById(id);
+  if (!p) return;
+  const c = CAT[p.c] || {};
+  let where;
+  const live = state.live;
+  if (live) {
+    const pos = [live.lon, live.lat];
+    const d = dist(pos, p.p), s = sideOf(pos, live.heading, p.p).side;
+    const along = project(state.route.path, pos).along;
+    const kmh = live.speed ? live.speed * 3.6 : 0;
+    where = d < 5 ? 'Right below you' : `${Math.round(d)} km to your ${sideWord(s)}${p.along > along + 2 && kmh > 150 ? ` · closest in ${fmtDur((p.along - along) / kmh)}` : p.along < along - 2 ? ' · behind you' : ''}`;
+  } else {
+    where = `${p.d < 5 ? 'Right below the route' : `${Math.round(p.d)} km to the ${sideWord(p.side)} of the route`} · about ${sinceTakeoff(p.along)} after take-off`;
+  }
+  let ov = $('#place');
+  if (!ov) { ov = document.createElement('div'); ov.id = 'place'; document.body.appendChild(ov); }
+  ov.innerHTML = `<div class="place-box glass" role="dialog" aria-label="${esc(p.n)}">
+    ${p.img ? `<div class="place-img"><img src="${esc(p.img.u)}" alt="${esc(p.n)}"><span class="credit">📷 ${esc(p.img.by)} · ${esc(p.img.lic)}</span></div>` : `<div class="place-img none"><span>${c.icon || '📍'}</span></div>`}
+    <div class="place-body">
+      <div class="pills"><span class="cat-pill" style="--c:${c.color || '#fff'}">${c.icon || ''} ${esc(kindLabel(p))}</span>${p.u ? '<span class="cat-pill unesco">UNESCO World Heritage Site</span>' : ''}</div>
+      <h3>${esc(p.n)}</h3>${p.hi && p.hi !== p.n ? `<div class="hi">${esc(p.hi)}</div>` : ''}
+      <div class="where"><span class="badge ${p.d < 5 ? 'B' : p.side}">${sideTag(p)}</span> ${esc(where)}</div>
+      <p>${esc(p.x || p.d || '')}</p>
+      <div class="place-foot">${p.wp ? `<a href="https://en.wikipedia.org/wiki/${encodeURIComponent(p.wp.replace(/ /g, '_'))}" target="_blank" rel="noopener">From Wikipedia ›</a>` : '<span class="muted">From Wikidata</span>'}<button data-place="close">Close</button></div>
+    </div></div>`;
+  ov.classList.add('show');
+  ov.onclick = (e) => { if (e.target === ov || e.target.closest('[data-place="close"]')) ov.classList.remove('show'); };
+}
 
 // ---------- map ----------
 const blankStyle = () => ({ version: 8, sources: {}, layers: [{ id: 'bg', type: 'background', paint: { 'background-color': '#0b1424' } }] });
@@ -144,7 +244,11 @@ async function initMap() {
   });
   state.styleName = 'vector';
   // tap the map during a flight to hide / show all controls
-  state.map.on('click', () => { if (document.body.classList.contains('flying')) document.body.classList.toggle('ui-off'); });
+  state.map.on('click', (e) => {
+    const hit = state.map.getLayer('place-dot') && state.map.queryRenderedFeatures(e.point, { layers: ['place-dot'] })[0];
+    if (hit) { openPlace(hit.properties.id); return; }
+    if (document.body.classList.contains('flying')) document.body.classList.toggle('ui-off');
+  });
   state.map.on('style.load', addOverlays);
   // small always-visible credits line, built from the current style's sources
   state.map.on('styledata', updateCredits);
@@ -189,7 +293,7 @@ function labelFont() {
 function addOverlays() {
   const m = state.map;
   const earth = state.styleName === 'earth';
-  for (const id of ['route', 'pois', 'track', 'feat']) if (!m.getSource(id)) m.addSource(id, { type: 'geojson', data: emptyFC() });
+  for (const id of ['route', 'pois', 'track', 'feat', 'places']) if (!m.getSource(id)) m.addSource(id, { type: 'geojson', data: emptyFC() });
   const add = (layer) => { if (!m.getLayer(layer.id)) m.addLayer(layer); };
   const isK = (k) => ['==', ['get', 'kind'], k];
   add({ id: 'feat-park', type: 'fill', source: 'feat', filter: isK('p'), paint: { 'fill-color': '#3ddc97', 'fill-opacity': earth ? 0.16 : 0.22, 'fill-antialias': false } });
@@ -232,6 +336,17 @@ function addOverlays() {
       paint: { 'text-color': ['match', ['get', 'kind'], 'p', '#b9ffd9', '#cdf6ff'], 'text-halo-color': 'rgba(4,12,24,0.85)', 'text-halo-width': 1.5 },
     });
   }
+  add({
+    id: 'place-dot', type: 'circle', source: 'places',
+    paint: { 'circle-radius': ['interpolate', ['linear'], ['zoom'], 4, 5, 9, 8], 'circle-color': ['get', 'color'], 'circle-stroke-color': '#ffffff', 'circle-stroke-width': 2, 'circle-pitch-alignment': 'map' },
+  });
+  if (m.getStyle().glyphs) {
+    add({
+      id: 'place-label', type: 'symbol', source: 'places',
+      layout: { 'text-field': ['get', 'name'], 'text-font': labelFont(), 'text-size': ['interpolate', ['linear'], ['zoom'], 4, 11.5, 9, 14.5], 'text-offset': [0, 1.1], 'text-anchor': 'top', 'text-optional': true, 'symbol-sort-key': ['-', 100, ['get', 's']] },
+      paint: { 'text-color': '#ffffff', 'text-halo-color': 'rgba(5,10,20,0.9)', 'text-halo-width': 1.7 },
+    });
+  }
   if (earth) applyNight();
   refreshOverlayData();
 }
@@ -249,6 +364,11 @@ function refreshOverlayData() {
     })),
   });
   m.getSource('feat')?.setData(r && state.featData ? state.featData : emptyFC());
+  const shown = r ? (state.trip ? state.featured : state.planFeatured) || [] : [];
+  m.getSource('places')?.setData({
+    type: 'FeatureCollection',
+    features: shown.map((p) => ({ type: 'Feature', geometry: { type: 'Point', coordinates: p.p }, properties: { id: p.id, name: p.n, s: p.s, color: CAT[p.c]?.color || '#fff' } })),
+  });
   m.getSource('track').setData(state.track.length > 1 ? { type: 'Feature', geometry: { type: 'LineString', coordinates: state.track } } : emptyFC());
 }
 
@@ -280,7 +400,7 @@ function applyNight() {
 // ---------- screens ----------
 function banner() {
   if (isIOS && !isStandalone()) {
-    return `<div class="note warn"><b>iPhone tip:</b> tap <b>Share → Add to Home Screen</b>, open Flight Window from your home screen, and save your flight <i>there</i>. Safari and the home-screen app keep separate offline storage.</div>`;
+    return `<div class="note warn"><b>iPhone tip:</b> tap <b>Share → Add to Home Screen</b>, open Flight Companion from your home screen, and save your flight <i>there</i>. Safari and the home-screen app keep separate offline storage.</div>`;
   }
   return '';
 }
@@ -295,7 +415,7 @@ function ticketLine(t) {
 
 function renderHome() {
   stopLive();
-  state.route = null; state.trip = null; state.track = [];
+  state.route = null; state.trip = null; state.track = []; state.featured = []; state.planFeatured = [];
   document.body.classList.remove('dim');
   if (state.vectorStyle) setMapStyle(state.vectorStyle, 'vector');
   refreshOverlayData();
@@ -319,7 +439,7 @@ function renderHome() {
     </div>`).join('');
   app.innerHTML = `
     <div class="sheet glass home">
-      <div class="brand"><span class="logo">✈︎</span><div><h1>Flight Window</h1><p>Know what's below your window, even in flight mode.</p></div></div>
+      <div class="brand"><span class="logo">✈︎</span><div><h1>Flight Companion</h1><p>Know what's below your window, even in flight mode.</p></div></div>
       ${banner()}
       ${state.installEvt ? `<button class="wide" data-action="install">Install app</button>` : ''}
       ${trips ? `<div class="list-title">Your flights</div><div class="trips">${trips}</div>` : ''}
@@ -400,7 +520,7 @@ function renderTicket() {
 }
 
 function renderPlan(pre = {}) {
-  state.route = null; refreshOverlayData();
+  state.route = null; state.planFeatured = []; refreshOverlayData();
   app.innerHTML = `
     <button class="back glass" data-action="home" aria-label="Back">‹</button>
     <div class="sheet glass plan">
@@ -468,6 +588,9 @@ async function preview(from, to, meta) {
   const earth = buildUrlList(eStyle, route.path, spots, tiles, { skipVector: true });
   const sharp = buildUrlList(eStyle, route.path, spots, corridorTiles(route.path, sharpPlan(pickedSide), []), { skipVector: true });
   const readyIn = (files) => Math.max(1, Math.round(files / 40 / 60));
+  const night = meta.night ?? state.night;
+  const feat = featuredFor(route, pickedSide, night);
+  state.planFeatured = feat; refreshOverlayData();
   let onRoute = '';
   try {
     const ev = buildEvents(route.path, await loadGeo());
@@ -486,13 +609,14 @@ async function preview(from, to, meta) {
     <div class="stats">
       <div><b>${fmtKm(route.path.total)}</b><span>direct distance</span></div>
       <div><b>~${fmtDur(flightHours(route.path.total))}</b><span>flight time</span></div>
-      <div><b>${route.pois.length}</b><span>places on the way</span></div>
+      <div><b>${(route.places?.length || route.pois.length).toLocaleString()}</b><span>places on the way</span></div>
     </div>
     <div class="seat">
       <button class="seat-side L ${best === 'L' ? 'best' : ''} ${si?.side === 'L' ? 'mine' : ''}" data-action="pick-side" data-s="L"><b>Left side</b><span>${s.nL} places${si?.side === 'L' ? ' · you' : ''}</span></button>
       <button class="seat-side R ${best === 'R' ? 'best' : ''} ${si?.side === 'R' ? 'mine' : ''}" data-action="pick-side" data-s="R"><b>Right side</b><span>${s.nR} places${si?.side === 'R' ? ' · you' : ''}</span></button>
     </div>
     ${seatMsg}
+    ${featuredHtml(route, feat, night)}
     ${onRoute}
     <label class="check"><input type="checkbox" id="opt-earth" checked><span><b>3D satellite & window view</b><small>Satellite ground, terrain and glowing night city lights · +${fmtMB(earth.estBytes)}. Extra-sharp ground on ${pickedSide ? `your ${sideWord(pickedSide)}` : 'each'} side (+${fmtMB(sharp.estBytes)}) keeps loading after you're ready.</small></span></label>
     <button class="primary wide" id="btn-save">Save · ready to fly in ~<span id="size">${readyIn(vec.urls.length + earth.urls.length)}</span> min</button>
@@ -523,6 +647,7 @@ async function saveTrip(route, meta, withEarth) {
       buildUrlList(earthStyle, route.path, spots, tiles).urls.forEach((u) => ess.add(u));
       sharp = buildUrlList(earthStyle, route.path, spots, corridorTiles(route.path, sharpPlan(side), []), { skipVector: true }).urls.filter((u) => !ess.has(u));
     }
+    if (route.places?.length) imageUrls(route.places, { total: route.path.total, hours: flightHours(route.path.total) }).forEach((u) => ess.add(u));
     const id = `${route.from.code}-${route.to.code}-${Date.now().toString(36)}`;
     await saveStyle(id, style);
     if (earthStyle) await saveStyle(`${id}-earth`, earthStyle);
@@ -531,7 +656,7 @@ async function saveTrip(route, meta, withEarth) {
     const trip = {
       id, from: route.from, to: route.to, total: route.path.total,
       carrier: meta.carrier || '', flight: meta.flight || '', airline: meta.airline || (meta.carrier && state.airlines?.[meta.carrier]) || '',
-      seat: meta.seat || '', side, date: meta.date || null,
+      seat: meta.seat || '', side, date: meta.date || null, night: meta.night ?? state.night,
       files: lists.ess.length, done: 0, sharpFiles: sharp.length, sharpDone: 0, bytes: 0, failed: 0,
       pending: true, sharpPending: sharp.length > 0, earth: !!earthStyle, hi: true, createdAt: Date.now(),
     };
@@ -689,7 +814,9 @@ async function openTrip(id) {
   state.earthStyle = trip.earth ? buildEarthStyle(state.vectorStyle, trip.hi ? hiAreasFor(trip.from, trip.to) : []) : null;
   state.trip = trip;
   state.route = await makeRoute(trip.from, trip.to);
+  if (trip.night != null) state.night = trip.night;
   await loadTripFeatures(trip.id);
+  setupPlaces();
   try { state.track = JSON.parse(localStorage.getItem(`fw-track-${trip.id}`) || '[]'); } catch { state.track = []; }
   state.view = state.earthStyle ? '3d' : 'map';
   state.dockOpen = false;
@@ -1080,6 +1207,11 @@ function ingest(s, jump = false) {
 }
 
 // Text: stats line, "below you", coming up. Runs twice a second at most.
+// Only touch the DOM when the content really changed, so taps on rows are never lost mid-redraw.
+function setHTML(sel, html) {
+  const el = $(sel);
+  if (el && el._html !== html) { el.innerHTML = html; el._html = html; }
+}
 function renderInfo() {
   const r = state.route, live = state.live;
   if (!r || !live) return;
@@ -1119,9 +1251,14 @@ function renderInfo() {
     line = '<b>Open country</b> <span class="muted">no major place within 150 km</span>';
     big = '<span class="lbl">Below you</span><b>Open country or sea</b>';
   }
+  const routeNear = onRoute ? (state.route.places || []).filter((p) => Math.abs(p.along - pr.along) < 15 && p.s >= 30 && dist(pos, p.p) < 10).sort((a, b) => b.s - a.s)[0] : null;
+  if (routeNear && !nowEv) {
+    line = `${CAT[routeNear.c]?.icon || '📍'} <b>${esc(routeNear.n)}</b> <span class="muted">below you</span>`;
+    big = `<span class="lbl">Below you</span><b data-action="place" data-id="${esc(routeNear.id)}">${esc(routeNear.n)} ›</b><div class="sub">${esc(kindLabel(routeNear))}</div>`;
+  }
   if (nowEv) line = `${ICON[nowEv.type]} <b>${esc(eventTitle(nowEv))}</b> <span class="muted">${nowEv.kind === 'near' ? `${Math.round(nowEv.d)} km ${sideWord(nowSide(nowEv, pos, heading))}` : 'now'}</span>`;
-  const bl = $('#below-line'); if (bl) bl.innerHTML = line;
-  const bb = $('#below'); if (bb) bb.innerHTML = big;
+  setHTML('#below-line', line);
+  setHTML('#below', big);
 
   const up = r.pois
     .filter((p) => p.along > pr.along + 3 && p.name !== near?.name)
@@ -1132,20 +1269,28 @@ function renderInfo() {
     .slice(0, 4)
     .sort((a, b) => a.p.along - b.p.along);
   const evs = state.events.filter((e) => e.start > pr.along + 1 && !(e.type === 's' && e.origin)).slice(0, 4);
+  const featUp = (state.featured || []).filter((p) => p.along > pr.along + 2).slice(0, 3).map((p) => {
+    const ps = sideOf(pos, heading, p.p).side, km = p.along - pr.along;
+    return { at: p.along, html: `
+        <div class="up place ${side && ps === side ? 'mine' : ''}" data-action="place" data-id="${esc(p.id)}">${p.img ? `<img class="up-img" src="${esc(p.img.u)}" alt="" loading="lazy">` : `<span class="badge ev">${CAT[p.c]?.icon || '📍'}</span>`}
+        <span class="up-name">${esc(p.n)}<small>${esc(kindLabel(p))} · ${p.d < 5 ? 'below' : sideWord(ps)}</small></span>
+        <span class="up-meta">${kmh && kmh > 150 ? fmtDur(km / kmh) : `${Math.round(km)} km`}</span></div>` };
+  });
   const rows = [
-    ...up.slice(0, 3).map(({ p, d, side: ps }) => ({ at: p.along, html: `
+    ...featUp,
+    ...(featUp.length ? [] : up.slice(0, 3)).map(({ p, d, side: ps }) => ({ at: p.along, html: `
         <div class="up ${side && ps === side ? 'mine' : ''}"><span class="badge ${ps}">${ps === 'L' ? 'LEFT' : 'RIGHT'}</span><span class="up-name">${esc(p.label)}</span>
         <span class="up-meta">${Math.round(d)} km${kmh && kmh > 150 ? ` · ${fmtDur(d / kmh)}` : ''}</span></div>` })),
     ...evs.map((e) => {
       const km = e.start - pr.along;
       const sd = e.kind === 'near' ? nowSide(e, pos, heading) : '';
       return { at: e.start, html: `
-        <div class="up ev ev-${e.type}"><span class="badge ev">${ICON[e.type]}</span><span class="up-name">${esc(eventTitle(e))}<small>${esc(eventSub(e))}${sd ? ` · ${sideWord(sd)}` : ''}</small></span>
+        <div class="up ev ev-${e.type}" ${e.place ? `data-action="place" data-id="${esc(e.place.id)}"` : ''}>${e.place?.img ? `<img class="up-img" src="${esc(e.place.img.u)}" alt="" loading="lazy">` : `<span class="badge ev">${ICON[e.type]}</span>`}<span class="up-name">${esc(eventTitle(e))}<small>${esc(eventSub(e))}${sd ? ` · ${sideWord(sd)}` : ''}</small></span>
         <span class="up-meta">${kmh && kmh > 150 ? fmtDur(km / kmh) : `${Math.round(km)} km`}</span></div>` };
     }),
   ].sort((a, b) => a.at - b.at).slice(0, 6);
   const upEl = $('#upcoming');
-  if (upEl) upEl.innerHTML = rows.length ? `<span class="lbl">Coming up</span>${rows.map((r) => r.html).join('')}` : '';
+  if (upEl) setHTML('#upcoming', rows.length ? `<span class="lbl">Coming up</span>${rows.map((r) => r.html).join('')}` : '');
 }
 
 // ---------- flight progress & story ----------
@@ -1189,7 +1334,7 @@ async function openStory() {
       const b = e.target.closest('[data-story]');
       if (e.target === ov || b?.dataset.story === 'close') { ov.classList.remove('show'); return; }
       if (b?.dataset.story === 'share') {
-        try { await navigator.share({ files: [file], title: 'My flight', text: `${state.trip.from.city} → ${state.trip.to.city} with Flight Window` }); } catch { /* cancelled */ }
+        try { await navigator.share({ files: [file], title: 'My flight', text: `${state.trip.from.city} → ${state.trip.to.city} with Flight Companion` }); } catch { /* cancelled */ }
       }
     };
   } catch (e) {
@@ -1228,29 +1373,36 @@ function nowSide(e, pos, heading) {
 }
 function checkAlerts(along, kmh, pos, heading) {
   const lead = kmh ? (kmh * 75) / 3600 : 10; // ~75 seconds ahead
-  for (const e of state.events) {
-    if (e.start - along > lead + 1) break;
-    const key = e.type === 's' ? `s:${e.name}` : `${e.type}:${e.name}:${Math.round(e.start)}`;
-    if (state.alerted.has(key)) continue;
-    if (e.type === 's' && e.origin) { state.alerted.add(key); continue; }
-    if (along - (e.kind === 'over' ? e.end : e.start) > 2) { state.alerted.add(key); continue; } // already passed
-    state.alerted.add(key);
-    const km = Math.max(0, e.start - along);
+  for (const it of state.alertItems || []) {
+    if (it.start - along > lead + 1) break;
+    if (state.alerted.has(it.key)) continue;
+    state.alerted.add(it.key);
+    const end = it.e?.kind === 'over' ? it.e.end : it.start;
+    if (along - end > 2) continue; // already passed
+    const km = Math.max(0, it.start - along);
     const when = km < 1.5 ? 'now' : kmh ? `in ${Math.max(1, Math.round((km / kmh) * 60))} min` : `in ${Math.round(km)} km`;
+    if (it.p) {
+      const p = it.p;
+      const hint = p.d < 5 ? 'Right below you' : `Look ${sideWord(sideOf(pos, heading, p.p).side)} · ${Math.round(p.d)} km away`;
+      showToast(CAT[p.c]?.icon || '📍', p.n, `${when === 'now' ? '' : `${when} · `}${hint}`, { img: p.img?.u, id: p.id });
+      break;
+    }
+    const e = it.e;
     let hint;
     if (e.type === 'r' || e.type === 't') hint = 'Look down';
     else if (e.kind === 'near') hint = `Look ${sideWord(nowSide(e, pos, heading))}`;
     else if (e.type === 's') hint = e.extra || '';
     else hint = eventSub(e);
     const title = e.type === 's' ? `Welcome to ${e.name}` : eventTitle(e);
-    showToast(ICON[e.type], title, `${when === 'now' ? '' : `${when} · `}${hint}`);
+    showToast(ICON[e.type], title, `${when === 'now' ? '' : `${when} · `}${hint}`, { img: e.place?.img?.u, id: e.place?.id });
     break;
   }
 }
 let toastTimer;
-function showToast(icon, title, sub) {
+function showToast(icon, title, sub, { img, id } = {}) {
   const t = $('#toast'); if (!t) return;
-  t.innerHTML = `<span class="t-ico">${icon}</span><span><b>${esc(title)}</b><small>${esc(sub)}</small></span>`;
+  t.innerHTML = `${img ? `<img class="t-img" src="${esc(img)}" alt="">` : `<span class="t-ico">${icon}</span>`}<span><b>${esc(title)}</b><small>${esc(sub)}</small></span>`;
+  if (id) { t.dataset.action = 'place'; t.dataset.id = id; } else { delete t.dataset.action; delete t.dataset.id; }
   t.classList.remove('show'); void t.offsetWidth; t.classList.add('show');
   try { navigator.vibrate?.(60); } catch { /* not supported */ }
   clearTimeout(toastTimer);
@@ -1307,6 +1459,9 @@ app.addEventListener('click', async (e) => {
     const lists = t && await loadSavedStyle(`${t.id}-urls`);
     if (t && lists) { runDownload(t, lists); renderHome(); }
   } else if (a === 'story') { openStory();
+  } else if (a === 'place') { openPlace(el.dataset.id);
+  } else if (a === 'plan-time') {
+    if (state.planMeta) { state.planMeta.night = el.dataset.n === '1'; state.planGo?.(); }
   } else if (a === 'open') openTrip(el.dataset.id);
   else if (a === 'delete') {
     const t = state.trips.find((x) => x.id === el.dataset.id);
@@ -1345,6 +1500,7 @@ app.addEventListener('click', async (e) => {
     state.night = !state.night;
     el.classList.toggle('on', state.night); el.textContent = state.night ? '☾' : '☀';
     applyNight(); updateCabin();
+    if (state.trip) { state.featured = featuredFor(state.route, mySide(), state.night); state.alertItems = planAlerts(); refreshOverlayData(); }
   }
 });
 
@@ -1374,9 +1530,10 @@ async function startDemo(qs) {
   if (qs.has('embed')) document.body.classList.add('embed');
   state.route = await makeRoute(from, to);
   await loadTripFeatures(null);
+  if (qs.has('night')) state.night = qs.get('night') !== '0';
   state.trip = { id: 'demo', from, to, total: state.route.path.total, carrier: '', flight: '', airline: '', seat: side === 'L' ? '14A' : '14F', side, earth: true };
   state.earthStyle = state.vectorStyle ? buildEarthStyle(state.vectorStyle) : null;
-  if (qs.has('night')) state.night = qs.get('night') !== '0';
+  setupPlaces();
   const v = qs.get('view');
   state.view = state.earthStyle ? (['map', '3d', 'window'].includes(v) ? v : 'window') : 'map';
   state.simSpeed = [1, 10, 60].includes(+qs.get('speed')) ? +qs.get('speed') : 10;

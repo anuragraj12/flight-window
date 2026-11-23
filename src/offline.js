@@ -325,7 +325,12 @@ export async function prefetch(urls, onProgress, { signal, concurrency = 24 } = 
           await cache.put(u, new Response(blob, { headers: { 'content-type': res.headers.get('content-type') || 'application/octet-stream' } }));
         } else if (res.status !== 404 && res.status !== 204) failedUrls.push(u);
       } catch {
-        failedUrls.push(u);
+        // Photos: if the server refuses a CORS request, keep an opaque copy (still shows in <img>)
+        let saved = false;
+        if (/\.wikimedia\.org\//.test(u)) {
+          try { const o = await fetch(u, { mode: 'no-cors', signal }); await cache.put(u, o); saved = true; } catch { /* give up */ }
+        }
+        if (!saved) failedUrls.push(u);
       }
       done++;
       onProgress?.({ done, total, bytes, failed: failedUrls.length });

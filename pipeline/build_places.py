@@ -469,8 +469,17 @@ def tile_of(lon: float, lat: float, z: int = TILE_Z) -> tuple[int, int]:
     return x, y
 
 
+def display_name(it: dict) -> str:
+    """Wikipedia's title is better checked than Wikidata's label: use it, minus
+    "(disambiguation)" and ", State" endings (Jaura, Madhya Pradesh -> Jaura)."""
+    if not it.get("en"):
+        return it["label"]
+    t = re.sub(r"\s*\(.*?\)$", "", it["en"]).split(", ")[0].strip()
+    return t or it["label"]
+
+
 def record(it: dict) -> dict:
-    r = {"id": it["id"], "n": it["label"], "c": it["cat"], "k": it["kind"],
+    r = {"id": it["id"], "n": display_name(it), "c": it["cat"], "k": it["kind"],
          "s": it["score"], "p": [round(it["lon"], 4), round(it["lat"], 4)]}
     if it.get("hi"):
         r["hi"] = it["hi"]

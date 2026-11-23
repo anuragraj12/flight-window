@@ -160,7 +160,7 @@ export async function makeStory({ trip, route, events, geo, track, progress, poi
 
   // footer
   g.textAlign = 'center'; g.fillStyle = 'rgba(234,242,255,0.55)'; g.font = `500 26px ${FONT}`;
-  g.fillText(`Made with Flight Window  ·  ${location.host}`, W / 2, H - 70);
+  g.fillText(`Made with Flight Companion  ·  ${location.host}`, W / 2, H - 70);
   return c;
 }
 

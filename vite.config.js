@@ -8,8 +8,8 @@ export default defineConfig({
       registerType: 'autoUpdate',
       includeAssets: ['icons/*.png', 'icons/icon.svg'],
       manifest: {
-        name: 'Flight Window',
-        short_name: 'Flight Window',
+        name: 'Flight Companion',
+        short_name: 'Flight Companion',
         description: "See what's below your window, even in flight mode.",
         theme_color: '#070b14',
         background_color: '#070b14',
@@ -31,6 +31,13 @@ export default defineConfig({
         skipWaiting: true,
         cleanupOutdatedCaches: true,
         importScripts: ['sw-bgfetch.js'],
+        // place photos: saved with the flight into the tile cache, served from it offline
+        runtimeCaching: [{
+          urlPattern: /^https:\/\/[a-z]+\.wikimedia\.org\//,
+          handler: 'CacheFirst',
+          // only full (CORS) responses; the save step stores those
+          options: { cacheName: 'fw-tiles-v1', cacheableResponse: { statuses: [200] } },
+        }],
       },
     }),
   ],

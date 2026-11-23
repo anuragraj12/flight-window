@@ -128,6 +128,9 @@ def main():
         for name in idx["tiles"]:
             recs = json.loads((out / "v1" / "7" / f"{name}.json").read_text())
             assert [r["s"] for r in recs] == sorted([r["s"] for r in recs], reverse=True)
+        assert bp.display_name({"en": "Jaura, Madhya Pradesh", "label": "Jaura"}) == "Jaura"
+        assert bp.display_name({"en": "Keoladeo National Park", "label": "Kevladev National Park"}) == "Keoladeo National Park"
+        assert bp.display_name({"en": "Kaveri (river)", "label": "x"}) == "Kaveri"
         assert bp.tile_of(77.2, 28.6) == (91, 53), bp.tile_of(77.2, 28.6)
         print("scores:", {k: v["s"] for k, v in allp.items()})
         print("categories:", idx["categories"])
