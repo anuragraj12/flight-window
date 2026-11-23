@@ -94,6 +94,9 @@ class FakeNet:
             pages = []
             for t in p["titles"].split("|"):
                 lic = "Fair use" if "Dam" in t else "CC BY-SA 4.0"
+                if "Ranthambore" in t:  # the real API sometimes sends [] here
+                    pages.append({"title": t, "imageinfo": [{"thumburl": "https://x/y.jpg", "extmetadata": []}]})
+                    continue
                 pages.append({"title": t, "imageinfo": [{
                     "thumburl": "https://upload.wikimedia.org/x/480px-" + t[5:], "thumbwidth": 480,
                     "thumbheight": 320, "descriptionurl": "https://commons.wikimedia.org/wiki/" + t,
@@ -120,6 +123,7 @@ def main():
         assert allp["Q3"]["c"] == "city" and allp["Q3"]["k"] == "city"
         assert allp["Q5"]["c"] == "works" and "img" not in allp["Q5"], "fair-use photo must be skipped"
         assert allp["Q7"]["img"]["by"] == "Some & One"
+        assert "img" not in allp["Q1"], "photo without licence info must be skipped"
         assert allp["Q10"]["u"] == 1 and "u" not in allp["Q1"]
         assert "(pronounced" not in allp["Q2"]["x"]
         assert "Q4421" in report and "woodland" in report, "root label warning missing"

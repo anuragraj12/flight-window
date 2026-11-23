@@ -410,7 +410,7 @@ def image_credits(net: Net, items: list[dict], log) -> None:
     for it in items:
         if it.get("image"):
             by_file[it["image"].replace("_", " ")].append(it)
-    ok = 0
+    ok = skipped = 0
     for batch in chunks(by_file, 50):
         data = net.wiki({
             "action": "query", "titles": "|".join("File:" + f for f in batch),
@@ -420,24 +420,38 @@ def image_credits(net: Net, items: list[dict], log) -> None:
         q = data.get("query", {})
         alias = {m["to"]: m["from"] for m in q.get("normalized", [])}
         for page in q.get("pages", []):
-            title = alias.get(page.get("title"), page.get("title", ""))
-            name = title.split(":", 1)[-1]
-            info = (page.get("imageinfo") or [None])[0]
-            if not info or not info.get("thumburl"):
-                continue
-            meta = info.get("extmetadata", {})
-            lic = meta.get("LicenseShortName", {}).get("value", "")
-            if not lic or NONFREE.search(lic):
-                continue
-            img = {
-                "u": info["thumburl"], "w": info.get("thumbwidth"), "h": info.get("thumbheight"),
-                "by": strip_html(meta.get("Artist", {}).get("value", "")) or "Unknown",
-                "lic": lic, "src": info.get("descriptionurl"),
-            }
-            for it in by_file.get(name, []):
-                it["img"] = img
-                ok += 1
-    log(f"image_credits: {ok} places have a usable photo")
+            try:
+                ok += credit_page(page, alias, by_file)
+            except Exception as ex:  # one odd record must never stop a long run
+                skipped += 1
+                if skipped <= 5:
+                    log(f"  skipped photo {page.get('title')}: {type(ex).__name__} {ex}")
+    log(f"image_credits: {ok} places have a usable photo ({skipped} odd records skipped)")
+
+
+def credit_page(page: dict, alias: dict, by_file: dict) -> int:
+    title = alias.get(page.get("title"), page.get("title", ""))
+    name = title.split(":", 1)[-1]
+    info = (page.get("imageinfo") or [None])[0]
+    if not info or not info.get("thumburl"):
+        return 0
+    meta = info.get("extmetadata")
+    if not isinstance(meta, dict):  # the API sends [] instead of {} when there is none
+        meta = {}
+    field = lambda k: (meta.get(k) or {}).get("value", "") if isinstance(meta.get(k), dict) else ""
+    lic = field("LicenseShortName")
+    if not lic or NONFREE.search(lic):
+        return 0
+    img = {
+        "u": info["thumburl"], "w": info.get("thumbwidth"), "h": info.get("thumbheight"),
+        "by": strip_html(field("Artist")) or "Unknown",
+        "lic": lic, "src": info.get("descriptionurl"),
+    }
+    n = 0
+    for it in by_file.get(name, []):
+        it["img"] = img
+        n += 1
+    return n
 
 
 def strip_html(s: str) -> str:
