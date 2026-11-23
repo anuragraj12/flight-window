@@ -1,21 +1,21 @@
-[    33s]   20 boxes done, 5526 items, 269 to go
-[    64s]   40 boxes done, 12706 items, 249 to go
-[    95s]   60 boxes done, 19837 items, 229 to go
-[   125s]   80 boxes done, 24284 items, 209 to go
-[   155s]   100 boxes done, 30347 items, 189 to go
-[   197s]   120 boxes done, 36872 items, 169 to go
-[   228s]   140 boxes done, 42202 items, 149 to go
-[   265s]   160 boxes done, 53144 items, 129 to go
-[   305s]   180 boxes done, 68692 items, 109 to go
-[   347s]   200 boxes done, 83300 items, 89 to go
-[   381s]   220 boxes done, 88935 items, 69 to go
-[   414s]   240 boxes done, 94888 items, 49 to go
-[   446s]   260 boxes done, 99009 items, 29 to go
-[   475s]   280 boxes done, 100321 items, 9 to go
-[   485s] extract: 100386 items from 289 boxes (0 splits, 0 failed)
-[   643s] classify: 2345 distinct types, 445 map to a category
-[   643s] filter: 12661 candidates of 100386
-[   702s] real_links: counted for 12661 places
-[  1283s] wiki_summaries: 12601 articles
-[  1806s] image_credits: 9814 places have a usable photo
-[  1806s] load: 12638 places in 146 tiles, 9.1 MB
+[    29s]   20 boxes done, 5526 items, 269 to go
+[    59s]   40 boxes done, 12706 items, 249 to go
+[    88s]   60 boxes done, 19837 items, 229 to go
+[   118s]   80 boxes done, 24284 items, 209 to go
+[   150s]   100 boxes done, 30347 items, 189 to go
+[   184s]   120 boxes done, 36872 items, 169 to go
+[   215s]   140 boxes done, 42202 items, 149 to go
+[   252s]   160 boxes done, 53144 items, 129 to go
+[   298s]   180 boxes done, 68692 items, 109 to go
+[   341s]   200 boxes done, 83300 items, 89 to go
+[   374s]   220 boxes done, 88935 items, 69 to go
+[   406s]   240 boxes done, 94888 items, 49 to go
+[   440s]   260 boxes done, 99009 items, 29 to go
+[   467s]   280 boxes done, 100321 items, 9 to go
+[   478s] extract: 100386 items from 289 boxes (0 splits, 0 failed)
+[   650s] classify: 2345 distinct types, 453 map to a category
+[   650s] filter: 12659 candidates of 100386
+[   709s] real_links: counted for 12659 places
+[   925s] wiki_summaries: 12599 articles
+[  1056s] image_credits: 9813 places have a usable photo
+[  1056s] load: 12633 places in 146 tiles, 9.1 MB
