@@ -172,7 +172,7 @@ SELECT ?item (SAMPLE(?coord) AS ?c) (MAX(?sl) AS ?links)
        (SAMPLE(?enTitle) AS ?en) (SAMPLE(?hiTitle) AS ?hi)
        (SAMPLE(?img) AS ?image) (MAX(?pop) AS ?population)
        (SAMPLE(?lab) AS ?label) (SAMPLE(?desc) AS ?description)
-       (MAX(?isWhs) AS ?whs)
+       (MAX(?isWhs) AS ?whs) (MAX(?elev) AS ?el)
        (GROUP_CONCAT(DISTINCT ?clsId; separator=" ") AS ?classes)
 WHERE {
   SERVICE wikibase:box {
@@ -187,6 +187,7 @@ WHERE {
   OPTIONAL { ?item wdt:P18 ?img }
   OPTIONAL { ?item wdt:P1082 ?pop }
   OPTIONAL { ?item wdt:P1435 wd:%(whs)s . BIND(1 AS ?isWhs) }
+  OPTIONAL { ?item p:P2044/psn:P2044/wikibase:quantityAmount ?elev }  # elevation, in metres
   OPTIONAL { ?item rdfs:label ?lab FILTER(LANG(?lab) = "en") }
   OPTIONAL { ?item schema:description ?desc FILTER(LANG(?desc) = "en") }
 }
@@ -212,6 +213,7 @@ def parse_item(b: dict) -> dict | None:
         "label": val(b, "label"), "desc": val(b, "description"),
         "classes": (val(b, "classes") or "").split(),
         "whs": val(b, "whs") == "1",
+        "el": int(float(val(b, "el"))) if val(b, "el") else 0,
     }
 
 
@@ -499,6 +501,8 @@ def record(it: dict) -> dict:
         r["hi"] = it["hi"]
     if it.get("whs"):
         r["u"] = 1  # UNESCO World Heritage Site
+    if it["cat"] == "terrain" and it.get("el", 0) >= 1000:
+        r["el"] = it["el"]  # big peaks can be seen from far away
     if it.get("desc"):
         r["d"] = it["desc"][:120]
     if it.get("extract"):
@@ -527,6 +531,9 @@ def load(places: list[dict], out: Path, log) -> dict:
         body = json.dumps(recs, ensure_ascii=False, separators=(",", ":"))
         p.write_text(body, encoding="utf-8")
         index_tiles[f"{x}-{y}"] = {"n": len(recs), "kb": round(len(body.encode()) / 1024, 1)}
+        peak = max((r.get("el", 0) for r in recs), default=0)
+        if peak >= 4000:
+            index_tiles[f"{x}-{y}"]["peak"] = peak  # lets the app fetch far-away tiles only for giants
         total += len(body.encode())
     index = {
         "version": datetime.now(timezone.utc).strftime("%Y-%m-%d"),

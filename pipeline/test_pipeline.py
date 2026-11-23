@@ -29,6 +29,7 @@ ITEMS = [
     ("Q8", 76.4, 29.9, 12, "Battle of Panipat", "Q178561", {}),
     ("Q9", 80.7, 25.0, 90, "Somewhere Country", "Q3624078 Q23442", {}),      # country -> excluded
     ("Q10", 78.0, 27.2, 150, "Taj Mahal", "Q162875", {"whs": 1}),
+    ("Q11", 79.9, 29.5, 70, "Nanda Devi", "Q8502", {"el": 7816}),
 ]
 SUBCLASS = {"Q1549591": ["Q486972"], "Q532": ["Q486972"], "Q3624078": ["Q6256"]}  # big city, village
 
@@ -118,11 +119,13 @@ def main():
                 allp[r["id"]] = r
         report = rep.read_text()
 
-        assert set(allp) == {"Q1", "Q2", "Q3", "Q5", "Q7", "Q8", "Q10"}, allp.keys()
+        assert set(allp) == {"Q1", "Q2", "Q3", "Q5", "Q7", "Q8", "Q10", "Q11"}, allp.keys()
         assert allp["Q1"]["c"] == "historic" and allp["Q1"]["k"] == "fort"
         assert allp["Q3"]["c"] == "city" and allp["Q3"]["k"] == "city"
         assert allp["Q5"]["c"] == "works" and "img" not in allp["Q5"], "fair-use photo must be skipped"
         assert allp["Q7"]["img"]["by"] == "Some & One"
+        assert allp["Q11"]["el"] == 7816 and "el" not in allp["Q2"]
+        assert any(v.get("peak") == 7816 for v in idx["tiles"].values())
         assert "img" not in allp["Q1"], "photo without licence info must be skipped"
         assert allp["Q10"]["u"] == 1 and "u" not in allp["Q1"]
         assert "(pronounced" not in allp["Q2"]["x"]
