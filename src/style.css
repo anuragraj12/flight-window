@@ -344,3 +344,30 @@ button.seat-side.mine.R { border-color: var(--R); background: rgba(76, 201, 240,
 .place-foot { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
 .place-foot a { color: var(--R); font-size: 13.5px; text-decoration: none; }
 .below-big b[data-action] { cursor: pointer; }
+
+/* ---------- v7: flight preview ---------- */
+.watch { margin-top: 10px; background: linear-gradient(90deg, #ff006e, #7b2ff7); border: 0; color: #fff; font-weight: 700; display: flex; align-items: center; justify-content: center; gap: 8px; }
+.watch small { font-weight: 500; opacity: 0.85; font-size: 12px; }
+.samples { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin-bottom: 12px; }
+.sample { display: flex; flex-direction: column; align-items: flex-start; gap: 2px; padding: 10px; border-radius: 14px; text-align: left; background: rgba(255, 255, 255, 0.05); border: 1px solid var(--line); color: var(--text); }
+.sample b { font-size: 14px; }
+.sample small { color: var(--muted); font-size: 11px; line-height: 1.3; }
+.tour-bar { position: absolute; left: 8px; right: 8px; bottom: calc(68px + var(--safe-b)); z-index: 3; display: flex; align-items: center; gap: 10px; padding: 8px 12px; border-radius: 16px; background: rgba(8, 12, 22, 0.72); }
+.tour-bar input { flex: 1; accent-color: #ff006e; }
+.tour-left { font-size: 12.5px; color: #cfdcf0; white-space: nowrap; min-width: 92px; text-align: right; }
+.spot { position: absolute; left: 8px; right: 8px; bottom: calc(136px + var(--safe-b)); z-index: 3; opacity: 0; transform: translateY(14px); transition: opacity 0.35s, transform 0.35s; pointer-events: none; }
+.spot.show { opacity: 1; transform: none; pointer-events: auto; }
+.spot-card { display: flex; gap: 12px; align-items: center; padding: 10px; border-radius: 18px; background: rgba(8, 12, 22, 0.8); cursor: pointer; box-shadow: 0 12px 40px rgba(0, 0, 0, 0.45); }
+.spot-card img { width: 96px; height: 72px; object-fit: cover; border-radius: 12px; flex: none; }
+.spot-ico { width: 72px; height: 72px; display: flex; align-items: center; justify-content: center; font-size: 34px; flex: none; }
+.spot-text { min-width: 0; }
+.spot-text .badge { width: auto; display: inline-block; margin-right: 6px; }
+.spot-text b { display: block; font-size: 17px; margin-top: 5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.spot-text small { color: #bcd3ee; font-size: 12.5px; }
+.unesco-mini { font-size: 9.5px; font-weight: 700; letter-spacing: 0.06em; padding: 3px 6px; border-radius: 6px; background: rgba(0, 90, 160, 0.85); color: #fff; }
+@media (min-width: 720px) { .tour-bar, .spot { left: 20px; right: auto; width: 400px; } }
+body.ui-off .tour-bar { display: none; }
+body.ui-off .spot { bottom: calc(16px + var(--safe-b)); }
+body.embed.touring .dock { display: none; }
+body.embed .tour-bar { bottom: calc(10px + var(--safe-b)); }
+body.embed .spot { bottom: calc(78px + var(--safe-b)); }

@@ -44,7 +44,7 @@ const state = {
   dockOpen: false, frame: true, simSpeed: 1, simRunning: false,
   events: [], feats: [], featData: null, alerted: new Set(), zoomBias: 0, userZooming: false,
   gpsWanted: false, lastFix: null, geo: null,
-  featured: [], planFeatured: [], alertItems: [],
+  featured: [], planFeatured: [], alertItems: [], tour: null,
 };
 
 function loadTrips() { try { return JSON.parse(localStorage.getItem('fw-trips') || '[]'); } catch { return []; } }
@@ -162,6 +162,7 @@ function featuredHtml(route, feat, night) {
     <div class="feat-head"><div><b>Featured along your flight</b><small>${feat.length} picked for your ${night ? 'night' : 'day'} flight · ${route.places.length.toLocaleString()} places within ${ROUTE_KM} km</small></div>
       <div class="seg small"><button data-action="plan-time" data-n="0" class="${night ? '' : 'on'}">☀ Day</button><button data-action="plan-time" data-n="1" class="${night ? 'on' : ''}">☾ Night</button></div></div>
     <div class="cards">${feat.map(placeCard).join('') || '<div class="note">Nothing stands out on this route.</div>'}</div>
+    ${feat.length ? `<button class="watch wide" data-action="watch">▶ Watch this flight <small>about ${Math.max(1, Math.round(tourSeconds(route, feat) / 60))} min preview</small></button>` : ''}
     <div class="cat-chips">${cats}</div>
   </div>`;
 }
@@ -197,6 +198,79 @@ function planAlerts() {
   return chosen.sort((a, b) => a.start - b.start);
 }
 
+// ---------- flight preview: the whole flight in about a minute, slowing down at each featured place ----------
+// Preview speed in km per second of screen time: 12 next to a featured place, 80 between them.
+const TOUR_NEAR = 12, TOUR_FAR = 80;
+function tourKmS(along, feat = state.featured) {
+  let dn = Infinity;
+  for (const p of feat) { const d = Math.abs(p.along - along); if (d < dn) dn = d; }
+  const t = Math.max(0, Math.min(1, (dn - 12) / 23));
+  return TOUR_NEAR + (TOUR_FAR - TOUR_NEAR) * t * t * (3 - 2 * t);
+}
+function tourSeconds(route, feat) {
+  let sec = 0;
+  for (let a = 0; a < route.path.total; a += 2) sec += 2 / tourKmS(a, feat);
+  return sec;
+}
+
+async function startTour({ from, to, side = '', night, back = null, view = '3d' }) {
+  stopLive();
+  if (!(state.route && state.route.from.code === from.code && state.route.to.code === to.code)) state.route = await makeRoute(from, to);
+  if (night != null) state.night = night;
+  await loadTripFeatures(null);
+  state.trip = { id: 'demo', from, to, total: state.route.path.total, carrier: '', flight: '', airline: '', seat: '', side, earth: true };
+  state.earthStyle = state.vectorStyle ? buildEarthStyle(state.vectorStyle) : null;
+  state.progress = { maxAlong: 0 }; state.storyShown = false; state.track = [];
+  setupPlaces();
+  state.alertItems = state.alertItems.filter((it) => !it.p); // places get the spotlight card instead
+  state.tour = { back, spot: null };
+  state.view = state.earthStyle ? view : 'map';
+  state.dockOpen = false;
+  await applyViewStyle();
+  refreshOverlayData();
+  renderFly();
+  startSim();
+  $('#sim-row')?.classList.add('hidden');
+  state.simAlong = 0;
+  ingest(simState(0), true);
+}
+
+function tourBarHtml() {
+  return `<div id="spot" class="spot"></div>
+    <div class="tour-bar glass">
+      <button class="icon" data-action="tour-play" id="tour-play" aria-label="Pause or play">❚❚</button>
+      <input type="range" id="tour-range" min="0" max="1000" value="0" aria-label="Flight progress">
+      <span id="tour-left" class="tour-left"></span>
+    </div>`;
+}
+
+function updateTour() {
+  const T = state.tour; if (!T || !state.route) return;
+  const a = state.simAlong, total = state.route.path.total;
+  let p = state.featured.find((x) => a > x.along - 18 && a < x.along + 8);
+  if (!p && T.spot && performance.now() - T.since < 3000) p = state.featured.find((x) => x.id === T.spot); // keep each card up 3 s
+  const el = $('#spot');
+  if (el && (p?.id || null) !== T.spot) {
+    T.since = performance.now();
+    T.spot = p?.id || null;
+    if (p) {
+      const c = CAT[p.c] || {};
+      el.innerHTML = `<div class="spot-card glass" data-action="place" data-id="${esc(p.id)}">
+        ${p.img ? `<img src="${esc(p.img.u)}" alt="">` : `<span class="spot-ico">${c.icon || '📍'}</span>`}
+        <div class="spot-text"><span class="badge ${p.d < 5 ? 'B' : p.side}">${sideTag(p)}</span>${p.u ? '<span class="unesco-mini">UNESCO</span>' : ''}
+          <b>${esc(p.n)}</b><small>${c.icon || ''} ${esc(kindLabel(p))}${p.d >= 5 ? ` · ${Math.round(p.d)} km away` : ''}</small></div></div>`;
+      if (state.view === 'window' && p.d >= 5 && state.look !== p.side) {
+        state.look = p.side;
+        document.querySelectorAll('[data-action="look"]').forEach((b) => b.classList.toggle('on', b.dataset.l === state.look));
+        updateCabin();
+      }
+    }
+    el.classList.toggle('show', !!p);
+  }
+  const range = $('#tour-range'); if (range) range.value = (a / total) * 1000;
+  const left = $('#tour-left'); if (left) left.textContent = a >= total - 1 ? 'Landed' : `${fmtDur((total - a) / 820)} to landing`;
+}
+
 function openPlace(id) {
   const p = placeById(id);
   if (!p) return;
@@ -224,7 +298,15 @@ function openPlace(id) {
       <div class="place-foot">${p.wp ? `<a href="https://en.wikipedia.org/wiki/${encodeURIComponent(p.wp.replace(/ /g, '_'))}" target="_blank" rel="noopener">From Wikipedia ›</a>` : '<span class="muted">From Wikidata</span>'}<button data-place="close">Close</button></div>
     </div></div>`;
   ov.classList.add('show');
-  ov.onclick = (e) => { if (e.target === ov || e.target.closest('[data-place="close"]')) ov.classList.remove('show'); };
+  const resume = state.tour && state.simRunning;
+  if (resume) setTourPlaying(false);
+  ov.onclick = (e) => {
+    if (e.target === ov || e.target.closest('[data-place="close"]')) { ov.classList.remove('show'); if (resume && state.tour) setTourPlaying(true); }
+  };
+}
+function setTourPlaying(on) {
+  if (on) { if (state.simAlong >= state.route.path.total - 0.5) state.simAlong = 0; playSim(); } else pauseSim();
+  const b = $('#tour-play'); if (b) b.textContent = on ? '❚❚' : '▶';
 }
 
 // ---------- map ----------
@@ -413,8 +495,10 @@ function ticketLine(t) {
   return bits.join(' · ');
 }
 
+const SAMPLES = [['DEL', 'BLR', 'Forts, tiger reserves, the Deccan'], ['DEL', 'SXR', 'Into the Himalaya'], ['BOM', 'GOI', 'Along the Western Ghats']];
 function renderHome() {
   stopLive();
+  state.tour = null; document.body.classList.remove('touring');
   state.route = null; state.trip = null; state.track = []; state.featured = []; state.planFeatured = [];
   document.body.classList.remove('dim');
   if (state.vectorStyle) setMapStyle(state.vectorStyle, 'vector');
@@ -443,6 +527,8 @@ function renderHome() {
       ${banner()}
       ${state.installEvt ? `<button class="wide" data-action="install">Install app</button>` : ''}
       ${trips ? `<div class="list-title">Your flights</div><div class="trips">${trips}</div>` : ''}
+      ${online ? `<div class="list-title">Watch a sample flight</div>
+      <div class="samples">${SAMPLES.map(([a, b, note]) => `<button class="sample" data-action="sample" data-r="${a}-${b}"><b>${a} → ${b}</b><small>${note}</small></button>`).join('')}</div>` : ''}
       <label class="scan ${online ? '' : 'disabled'}">
         <input type="file" id="ticket-file" accept="image/*,application/pdf" ${online ? '' : 'disabled'} hidden>
         <span class="scan-icon">▣</span>
@@ -520,6 +606,7 @@ function renderTicket() {
 }
 
 function renderPlan(pre = {}) {
+  stopLive(); state.tour = null; document.body.classList.remove('touring');
   state.route = null; state.planFeatured = []; refreshOverlayData();
   app.innerHTML = `
     <button class="back glass" data-action="home" aria-label="Back">‹</button>
@@ -876,6 +963,7 @@ function renderFly() {
     </div>
     <div id="window-hint" class="window-hint hidden"></div>
     <div id="toast" class="toast" aria-live="polite"></div>
+    ${state.tour ? tourBarHtml() : ''}
     <div class="tap-hint">Tap to show controls</div>
     <div class="dock glass ${state.dockOpen ? 'open' : ''}" id="dock">
       <div class="dock-row" data-action="dock">
@@ -917,6 +1005,12 @@ function renderFly() {
     ingest(simState(state.simAlong), true);
   });
   $('#tilt').addEventListener('input', (e) => { state.tilt = +e.target.value; });
+  $('#tour-range')?.addEventListener('input', (e) => {
+    state.simAlong = (e.target.value / 1000) * state.route.path.total;
+    ingest(simState(state.simAlong), true);
+    updateTour();
+  });
+  document.body.classList.toggle('touring', !!state.tour);
   updateWindowHint();
   updateCabin();
   if (state.gpsWanted) {
@@ -1004,12 +1098,12 @@ function frame(now) {
   let target;
   if (state.simRunning) {
     const total = state.route.path.total;
-    const s = simState(state.simAlong);
-    state.simAlong = Math.min(total, state.simAlong + (s.speed * state.simSpeed * dt) / 1000);
+    if (state.tour) state.simAlong = Math.min(total, state.simAlong + tourKmS(state.simAlong) * dt);
+    else state.simAlong = Math.min(total, state.simAlong + (simState(state.simAlong).speed * state.simSpeed * dt) / 1000);
     const n = simState(state.simAlong);
     setMotion(n);
     target = [n.lon, n.lat];
-    if (state.simAlong >= total) pauseSim();
+    if (state.simAlong >= total) { if (state.tour) setTourPlaying(false); else pauseSim(); }
   } else {
     const ahead = Math.min(4, (now - motion.t) / 1000);
     target = motion.speed > 5 ? destination([motion.lon, motion.lat], motion.heading, (motion.speed * ahead) / 1000) : [motion.lon, motion.lat];
@@ -1029,6 +1123,7 @@ function frame(now) {
     lastInfo = now;
     state.live = { ...state.live, lon: pos[0], lat: pos[1], heading: motion.dHeading, speed: motion.speed, alt: motion.alt };
     renderInfo();
+    updateTour();
     const range = $('#sim-range');
     if (state.simRunning && range) range.value = (state.simAlong / state.route.path.total) * 1000;
   }
@@ -1442,7 +1537,9 @@ app.addEventListener('click', async (e) => {
   const el = e.target.closest('[data-action]');
   if (!el || el.disabled) return;
   const a = el.dataset.action;
-  if (a === 'home') renderHome();
+  if (a === 'home') {
+    if (state.tour?.back) renderPlan(state.tour.back); else renderHome();
+  }
   else if (a === 'new') {
     const t = state.ticket; state.ticket = null;
     renderPlan(t ? { from: t.from, to: t.to, seat: t.seat, side: ticketSide(), carrier: t.carrier, flight: t.flight, airline: t.airline, date: t.date } : {});
@@ -1460,6 +1557,16 @@ app.addEventListener('click', async (e) => {
     if (t && lists) { runDownload(t, lists); renderHome(); }
   } else if (a === 'story') { openStory();
   } else if (a === 'place') { openPlace(el.dataset.id);
+  } else if (a === 'watch') {
+    const r = state.route, m = state.planMeta || {};
+    if (!r) return;
+    const si = seatInfo(m.seat);
+    startTour({ from: r.from, to: r.to, side: m.side || (si && si.side !== 'C' ? si.side : ''), night: m.night ?? state.night, back: { ...m, from: r.from, to: r.to } });
+  } else if (a === 'sample') {
+    const [f, t] = el.dataset.r.split('-');
+    const from = airportByCode(f), to = airportByCode(t);
+    if (from && to) { app.innerHTML = '<div class="sheet glass"><div class="note">Preparing the flight…</div></div>'; await loadPlaces(); startTour({ from, to, side: 'L', night: false }); }
+  } else if (a === 'tour-play') { setTourPlaying(!state.simRunning);
   } else if (a === 'plan-time') {
     if (state.planMeta) { state.planMeta.night = el.dataset.n === '1'; state.planGo?.(); }
   } else if (a === 'open') openTrip(el.dataset.id);
@@ -1514,7 +1621,17 @@ window.addEventListener('offline', () => { if (!state.route && !state.ticket) re
   await Promise.all([initMap(), loadAirports()]);
   loadAirlines().catch(() => {});
   const qs = new URLSearchParams(location.search);
-  if (qs.has('demo')) await startDemo(qs);
+  if (qs.has('tour')) {
+    await loadPlaces();
+    const [a, b] = (qs.get('tour') || 'DEL-BLR').toUpperCase().split('-');
+    if (qs.has('embed')) document.body.classList.add('embed');
+    const v = qs.get('view');
+    await startTour({
+      from: airportByCode(a) || airportByCode('DEL'), to: airportByCode(b) || airportByCode('BLR'),
+      side: (qs.get('side') || 'L').toUpperCase() === 'R' ? 'R' : 'L', night: qs.has('night') ? qs.get('night') !== '0' : false,
+      view: ['map', '3d', 'window'].includes(v) ? v : '3d',
+    });
+  } else if (qs.has('demo')) await startDemo(qs);
   else { loadPlaces().catch(() => {}); renderHome(); resumePending(); }
 })();
 window.addEventListener('online', () => resumePending());
