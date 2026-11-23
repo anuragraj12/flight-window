@@ -45,7 +45,7 @@ MIN_SCORE = 6           # drop places scoring below this
 
 # Our categories, in priority order: when an item matches several (a hill
 # fort is both a fort and a hill), the first one in this list wins.
-CATEGORY_ORDER = ["historic", "battle", "nature", "water", "terrain", "city", "works"]
+CATEGORY_ORDER = ["exclude", "historic", "battle", "nature", "water", "terrain", "city", "works"]
 
 # Root classes. Anything whose type is this class, or a subclass of it at any
 # depth, belongs to the category. The label is what we expect Wikidata to call
@@ -104,11 +104,18 @@ ROOTS: dict[str, tuple[str, str]] = {
     "Q178561": ("battle", "battle"),
     # settlements: kept only when large (see keep())
     "Q486972": ("human settlement", "city"),
+    # never shown: whole countries are not "places along the route"
+    "Q6256": ("country", "exclude"),
 }
 
 # How much each category counts when ranking (1.0 = full weight)
 CATEGORY_WEIGHT = {"water": 1.0, "terrain": 1.0, "nature": 1.0, "city": 1.0,
                    "historic": 0.9, "works": 0.8, "battle": 0.6}
+
+# Some kinds are less interesting from a window than their category suggests
+KIND_WEIGHT = {"airport": 0.5, "power station": 0.6, "church building": 0.8,
+               "mosque": 0.85, "temple": 0.85}
+WORLD_HERITAGE = "Q9259"  # UNESCO World Heritage Site
 
 # Wikipedias written mostly by bots from map databases. They give rivers and
 # hills dozens of "language links" that say nothing about real notability.
@@ -165,6 +172,7 @@ SELECT ?item (SAMPLE(?coord) AS ?c) (MAX(?sl) AS ?links)
        (SAMPLE(?enTitle) AS ?en) (SAMPLE(?hiTitle) AS ?hi)
        (SAMPLE(?img) AS ?image) (MAX(?pop) AS ?population)
        (SAMPLE(?lab) AS ?label) (SAMPLE(?desc) AS ?description)
+       (MAX(?isWhs) AS ?whs)
        (GROUP_CONCAT(DISTINCT ?clsId; separator=" ") AS ?classes)
 WHERE {
   SERVICE wikibase:box {
@@ -178,6 +186,7 @@ WHERE {
   OPTIONAL { ?hiA schema:about ?item ; schema:isPartOf <https://hi.wikipedia.org/> ; schema:name ?hiTitle . }
   OPTIONAL { ?item wdt:P18 ?img }
   OPTIONAL { ?item wdt:P1082 ?pop }
+  OPTIONAL { ?item wdt:P1435 wd:%(whs)s . BIND(1 AS ?isWhs) }
   OPTIONAL { ?item rdfs:label ?lab FILTER(LANG(?lab) = "en") }
   OPTIONAL { ?item schema:description ?desc FILTER(LANG(?desc) = "en") }
 }
@@ -202,6 +211,7 @@ def parse_item(b: dict) -> dict | None:
         "pop": int(float(pop)) if pop else 0,
         "label": val(b, "label"), "desc": val(b, "description"),
         "classes": (val(b, "classes") or "").split(),
+        "whs": val(b, "whs") == "1",
     }
 
 
@@ -222,7 +232,7 @@ def extract(net: Net, log, bbox=BBOX, step=START_STEP) -> dict[str, dict]:
     while todo:
         w, s, e, n = todo.pop(0)
         size = e - w
-        q = BOX_QUERY % {"w": w, "s": s, "e": e, "n": n, "limit": ROW_LIMIT + 1}
+        q = BOX_QUERY % {"w": w, "s": s, "e": e, "n": n, "limit": ROW_LIMIT + 1, "whs": WORLD_HERITAGE}
         try:
             rows = net.sparql(q)
         except Exception as ex:  # timeouts on dense boxes
@@ -322,7 +332,7 @@ def pick_category(it: dict, class_roots: dict[str, list[str]]):
 
 def keep(it: dict) -> bool:
     """First filter, before any Wikipedia calls."""
-    if it["cat"] is None or not it.get("label"):
+    if it["cat"] in (None, "exclude") or not it.get("label"):
         return False
     if it["cat"] == "city":
         return it["pop"] >= 100_000 or it["links"] >= 40
@@ -437,14 +447,17 @@ def strip_html(s: str) -> str:
 
 # ---------------------------------------------------------------- 4. score
 def score(it: dict) -> int:
-    """0-100. Language links on a log scale, times category weight and photo."""
+    """0-100. Language links on a log scale, times weights for kind and content."""
     langs = it.get("langs", it["links"])
-    notability = min(1.0, math.log1p(langs) / math.log1p(60))
-    if it["cat"] == "city":  # cities: blend in population
-        notability = max(notability, min(1.0, math.log10(max(it["pop"], 1)) / 7.3))
-    photo = 1.15 if it.get("img") else 0.85
+    notability = min(1.0, math.log1p(langs) / math.log1p(200))   # 200 languages = 1.0
+    if it["cat"] == "city":  # cities: blend in population, 100k -> 0.3, 10M -> 0.9
+        pop = min(1.0, max(0.0, (math.log10(max(it["pop"], 1)) - 4) / 3.3))
+        notability = max(notability, pop)
+    weight = CATEGORY_WEIGHT[it["cat"]] * KIND_WEIGHT.get(it["kind"], 1.0)
+    photo = 1.0 if it.get("img") else 0.8
     text = 1.0 if it.get("extract") else 0.85
-    return round(100 * min(1.0, notability * CATEGORY_WEIGHT[it["cat"]] * photo * text))
+    unesco = 1.25 if it.get("whs") else 1.0
+    return round(100 * min(1.0, notability * weight * photo * text * unesco))
 
 
 # ---------------------------------------------------------------- 5. load
@@ -461,6 +474,8 @@ def record(it: dict) -> dict:
          "s": it["score"], "p": [round(it["lon"], 4), round(it["lat"], 4)]}
     if it.get("hi"):
         r["hi"] = it["hi"]
+    if it.get("whs"):
+        r["u"] = 1  # UNESCO World Heritage Site
     if it.get("desc"):
         r["d"] = it["desc"][:120]
     if it.get("extract"):
@@ -549,7 +564,10 @@ def write_report(path: Path, index: dict, places: list[dict], warnings, lines, n
           f"- Places: **{index['count']}** in {len(index['tiles'])} tiles, {index['kb']} KB of JSON",
           f"- Time: {secs / 60:.1f} min; calls: {dict(net.calls)}",
           f"- With photo: {sum(1 for p in places if p.get('img'))}, "
-          f"with summary: {sum(1 for p in places if p.get('extract'))}", "",
+          f"with summary: {sum(1 for p in places if p.get('extract'))}, "
+          f"UNESCO sites: {sum(1 for p in places if p.get('whs'))}", "",
+          "Score spread: " + " ".join(f"{lo}-{lo + 9}: {sum(1 for p in places if lo <= p['score'] < lo + 10)}"
+                                      for lo in range(0, 100, 10)) + f" 100: {sum(1 for p in places if p['score'] == 100)}", "",
           "## Categories", ""]
     md += [f"- {c}: {n}" for c, n in index["categories"].items()]
     md += ["", "## Root class check", ""]

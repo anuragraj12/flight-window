@@ -27,8 +27,10 @@ ITEMS = [
     ("Q6", 80.0, 21.0, 2, None, "Q999", {}),                                    # unknown type -> dropped
     ("Q7", 76.5, 11.5, 25, "Nagarhole National Park", "Q46169", {"image": "http://commons.wikimedia.org/wiki/Special:FilePath/Nag%20park.jpg"}),
     ("Q8", 76.4, 29.9, 12, "Battle of Panipat", "Q178561", {}),
+    ("Q9", 80.7, 25.0, 90, "Somewhere Country", "Q3624078 Q23442", {}),      # country -> excluded
+    ("Q10", 78.0, 27.2, 150, "Taj Mahal", "Q162875", {"whs": 1}),
 ]
-SUBCLASS = {"Q1549591": ["Q486972"], "Q532": ["Q486972"]}  # big city, village
+SUBCLASS = {"Q1549591": ["Q486972"], "Q532": ["Q486972"], "Q3624078": ["Q6256"]}  # big city, village
 
 
 class FakeNet:
@@ -113,11 +115,12 @@ def main():
                 allp[r["id"]] = r
         report = rep.read_text()
 
-        assert set(allp) == {"Q1", "Q2", "Q3", "Q5", "Q7", "Q8"}, allp.keys()
+        assert set(allp) == {"Q1", "Q2", "Q3", "Q5", "Q7", "Q8", "Q10"}, allp.keys()
         assert allp["Q1"]["c"] == "historic" and allp["Q1"]["k"] == "fort"
         assert allp["Q3"]["c"] == "city" and allp["Q3"]["k"] == "city"
         assert allp["Q5"]["c"] == "works" and "img" not in allp["Q5"], "fair-use photo must be skipped"
         assert allp["Q7"]["img"]["by"] == "Some & One"
+        assert allp["Q10"]["u"] == 1 and "u" not in allp["Q1"]
         assert "(pronounced" not in allp["Q2"]["x"]
         assert "Q4421" in report and "woodland" in report, "root label warning missing"
         assert "splitting" in report
