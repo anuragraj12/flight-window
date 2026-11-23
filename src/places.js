@@ -18,6 +18,11 @@ export const CAT = {
 // How far from the flight path each kind of place is still worth pointing out (km).
 const REACH = { terrain: 110, water: 80, city: 70, nature: 70, historic: 45, works: 40, battle: 40 };
 export const ROUTE_KM = 80; // "along your route" means within this distance
+const FAR_KM = 300;          // big peaks are visible much further away
+
+// From 11 km up, snow peaks stand out far beyond anything else on the ground.
+export const peakReach = (el = 0) => (el >= 8000 ? 300 : el >= 7000 ? 250 : el >= 6000 ? 200 : el >= 5000 ? 150 : 0);
+const reachOf = (p) => Math.max(REACH[p.c] || 50, p.c === 'terrain' ? peakReach(p.el) : 0);
 
 const abs = (p) => new URL(p, location.origin).href;
 
@@ -44,14 +49,17 @@ const loadIndex = () => (indexP ??= getJSON(abs(`${BASE}/index.json`), { fresh: 
 // All places within ROUTE_KM of the path, with along-track position and side.
 export async function routePlaces(path) {
   const index = await loadIndex();
-  const tiles = corridorTiles(path, [{ zmin: Z, zmax: Z, km: ROUTE_KM + 30 }], [])
-    .map(([, x, y]) => `${x}-${y}`)
-    .filter((k) => index.tiles[k]);
+  const key = ([, x, y]) => `${x}-${y}`;
+  const near = new Set(corridorTiles(path, [{ zmin: Z, zmax: Z, km: ROUTE_KM + 30 }], []).map(key));
+  const far = corridorTiles(path, [{ zmin: Z, zmax: Z, km: FAR_KM + 30 }], []).map(key)
+    .filter((k) => !near.has(k) && (index.tiles[k]?.peak || 0) >= 5000);
+  const tiles = [...near, ...far].filter((k) => index.tiles[k]);
   const packs = await Promise.all(tiles.map((k) => getJSON(abs(`${BASE}/${Z}/${k}.json?v=${index.version}`)).catch(() => [])));
   const out = [];
   for (const p of packs.flat()) {
     const pr = project(path, p.p);
-    if (pr.d > ROUTE_KM || pr.along < 0) continue;
+    if (pr.along < 0 || pr.along > path.total) continue;
+    if (pr.d > ROUTE_KM && pr.d > peakReach(p.el)) continue;
     out.push({ ...p, along: pr.along, d: pr.d, side: pr.side });
   }
   out.sort((a, b) => a.along - b.along);
@@ -65,7 +73,7 @@ const DAY_FIT = { city: 0.85 };
 // Featured score: notability x how visible from here x your window side x day or night.
 export function featureScore(p, { side = '', night = false, total = 0 } = {}) {
   const low = p.along < 120 || total - p.along < 150; // climbing or descending: close to the ground
-  const reach = (REACH[p.c] || 50) * (low ? 0.5 : 1);
+  const reach = reachOf(p) * (low ? 0.5 : 1);
   if (p.d > reach) return 0;
   let v = Math.max(0, 1 - (p.d / reach) ** 1.5);
   if (low && p.d < 20) v *= 1.3;
@@ -74,12 +82,37 @@ export function featureScore(p, { side = '', night = false, total = 0 } = {}) {
   return p.s * v * sideFit * time * (p.img ? 1 : 0.8);
 }
 
-// About `perHour` featured places, spread evenly: the best one in each time slot.
-export function pickFeatured(places, { total, hours, side, night, perHour = 10, min = 9 }) {
+const SMALL = new Set(['monument', 'temple', 'mosque', 'church building', 'mausoleum', 'stupa', 'ruins', 'lighthouse', 'battle']);
+
+// Famous enough to point out at all? Most towns and small temples are not.
+export function isHighlight(p, { night = false, total = Infinity } = {}) {
+  if (p.c === 'city') {
+    if (p.along < 50 || total - p.along < 50) return false; // you are flying from or to it
+    return p.s >= (night ? 65 : 78);
+  }
+  if (night) return p.c === 'water' ? p.s >= 55 : false;
+  if (p.c === 'terrain' && p.el >= 5000) return true;
+  if (SMALL.has(p.k)) return p.s >= 85 || (p.u && p.s >= 50); // too small to see unless very famous
+  if (p.u) return true;
+  if (p.k === 'river') return p.s >= 55;
+  return p.s >= 45 && (p.img || p.s >= 60);
+}
+
+// Highlights you could see from each side (for choosing a seat).
+export function sideHighlights(places, { night = false, total } = {}) {
+  const n = { L: 0, R: 0 };
+  for (const p of places) if (p.d >= 4 && p.d <= reachOf(p) && isHighlight(p, { night, total })) n[p.side]++;
+  return n;
+}
+
+// At most `perHour` featured places, spread out: the best famous one in each time slot.
+// A slot with nothing famous stays empty.
+export function pickFeatured(places, { total, hours, side, night, perHour = 8, min = 15 }) {
   const slots = Math.max(1, Math.round(hours * perHour));
   const slotKm = total / slots;
   const best = new Array(slots).fill(null);
   for (const p of places) {
+    if (!isHighlight(p, { night, total })) continue;
     const f = featureScore(p, { side, night, total });
     if (f < min) continue;
     const i = Math.min(slots - 1, Math.floor(p.along / slotKm));

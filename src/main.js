@@ -11,7 +11,7 @@ import {
 import { makeStory } from './story.js';
 import { extractTileFeatures, buildEvents, eventTitle, eventSub, summary, overlayData, ICON, inPolys } from './features.js';
 import { readTicket, seatInfo } from './boarding.js';
-import { routePlaces, pickFeatured, categoryCounts, imageUrls, attachPlaces, CAT, ROUTE_KM } from './places.js';
+import { routePlaces, pickFeatured, sideHighlights, imageUrls, attachPlaces, CAT } from './places.js';
 
 maplibregl.setWorkerUrl(workerUrl);
 registerSW({ immediate: true });
@@ -136,6 +136,9 @@ function sideScore(pois, places = []) {
 }
 const flightHours = (km) => km / 800 + 0.45;
 const sinceTakeoff = (along) => fmtDur(along / 800 + 0.15);
+// Two numbers, so nothing is hidden: what you need before boarding, and the total once the sharp ground arrives.
+const sizeLine = (ready, sharp, withSharp, side) =>
+  `<b>~${fmtMB(ready)}</b> to be ready${withSharp ? ` · <b>~${fmtMB(ready + sharp)}</b> in total with sharp ground` : ''} · Wi-Fi recommended${side || !withSharp ? '' : '. Pick your side to download less'}`;
 
 // ---------- featured places ----------
 function featuredFor(route, side, night) {
@@ -155,15 +158,13 @@ function placeCard(p) {
   </button>`;
 }
 
-function featuredHtml(route, feat, night) {
+function featuredHtml(route, feat, night, side) {
   if (!route.places?.length) return '';
-  const cats = categoryCounts(route.places).map(([c, n]) => `<span>${CAT[c]?.icon || ''} ${n} ${esc((CAT[c]?.label || c).toLowerCase())}</span>`).join('');
   return `<div class="featured">
-    <div class="feat-head"><div><b>Featured along your flight</b><small>${feat.length} picked for your ${night ? 'night' : 'day'} flight · ${route.places.length.toLocaleString()} places within ${ROUTE_KM} km</small></div>
+    <div class="feat-head"><div><b>Worth looking out for</b><small>${feat.length} famous sights${side ? `, your ${sideWord(side)} side first` : ''} · ${night ? 'what shows up at night' : 'by day'}</small></div>
       <div class="seg small"><button data-action="plan-time" data-n="0" class="${night ? '' : 'on'}">☀ Day</button><button data-action="plan-time" data-n="1" class="${night ? 'on' : ''}">☾ Night</button></div></div>
     <div class="cards">${feat.map(placeCard).join('') || '<div class="note">Nothing stands out on this route.</div>'}</div>
     ${feat.length ? `<button class="watch wide" data-action="watch">▶ Watch this flight <small>about ${Math.max(1, Math.round(tourSeconds(route, feat) / 60))} min preview</small></button>` : ''}
-    <div class="cat-chips">${cats}</div>
   </div>`;
 }
 
@@ -438,6 +439,8 @@ function refreshOverlayData() {
   if (!m?.getSource('route')) return;
   const r = state.route;
   m.getSource('route').setData(r ? { type: 'Feature', geometry: { type: 'LineString', coordinates: r.path.pts } } : emptyFC());
+  // With famous sights on the route, the old city dots are just noise: keep their names only.
+  if (m.getLayer('poi-dot')) m.setLayoutProperty('poi-dot', 'visibility', r?.places?.length ? 'none' : 'visible');
   m.getSource('pois').setData({
     type: 'FeatureCollection',
     features: (r?.pois || []).map((p) => ({
@@ -663,8 +666,9 @@ async function preview(from, to, meta) {
     state.route = route; refreshOverlayData(); fitRoute(460);
   }
   const route = state.route;
-  const s = route.sides;
-  const best = Math.abs(s.L - s.R) < 1.5 ? null : s.L > s.R ? 'L' : 'R';
+  const night = meta.night ?? state.night;
+  const s = route.places?.length ? sideHighlights(route.places, { night, total: route.path.total }) : { L: route.sides.nL, R: route.sides.nR };
+  const best = Math.abs(s.L - s.R) <= Math.max(2, 0.25 * Math.max(s.L, s.R)) ? null : s.L > s.R ? 'L' : 'R';
   const si0 = seatInfo(meta.seat);
   const pickedSide = meta.side || (si0 && si0.side !== 'C' ? si0.side : '');
   const si = pickedSide ? { ...(si0 || { kind: 'window' }), side: pickedSide } : si0;
@@ -675,7 +679,6 @@ async function preview(from, to, meta) {
   const earth = buildUrlList(eStyle, route.path, spots, tiles, { skipVector: true });
   const sharp = buildUrlList(eStyle, route.path, spots, corridorTiles(route.path, sharpPlan(pickedSide), []), { skipVector: true });
   const readyIn = (files) => Math.max(1, Math.round(files / 40 / 60));
-  const night = meta.night ?? state.night;
   const feat = featuredFor(route, pickedSide, night);
   state.planFeatured = feat; refreshOverlayData();
   let onRoute = '';
@@ -686,33 +689,33 @@ async function preview(from, to, meta) {
   } catch (e) { console.warn(e); }
   let seatMsg;
   if (si && si.side !== 'C') {
-    const mine = si.side === 'L' ? s.nL : s.nR;
+    const mine = s[si.side];
     const good = !best || best === si.side;
-    seatMsg = `<div class="note ${good ? 'ok' : 'warn'}">${meta.seat ? `Seat ${esc(meta.seat)}` : 'Your seat'} is on the <b>${sideWord(si.side)}</b>${si.kind === 'window' ? ' window' : ''}: about ${mine} places on your side.${good ? '' : ` The ${sideWord(best)} side has more. Ask to switch if you can.`} <span class="muted">Tap a side to change it.</span></div>`;
+    seatMsg = `<div class="note ${good ? 'ok' : 'warn'}">${meta.seat ? `Seat ${esc(meta.seat)}` : 'Your seat'} is on the <b>${sideWord(si.side)}</b>${si.kind === 'window' ? ' window' : ''}: ${mine} famous sight${mine === 1 ? '' : 's'} on your side.${good ? '' : ` The ${sideWord(best)} side has more. Ask to switch if you can.`}</div>`;
   } else {
-    seatMsg = `<p class="hint">${best ? `For the best view, sit on the <b>${sideWord(best)}</b> side (facing forward).` : 'Both sides have about the same to see.'} Tap the side you're sitting on. Based on the direct route; the real path can differ.</p>`;
+    seatMsg = `<p class="hint">${best ? `For the best view, sit on the <b>${sideWord(best)}</b> side (facing forward).` : 'Both sides have about the same to see.'} Tap the side you're sitting on.</p>`;
   }
   info.innerHTML = `
     <div class="stats">
       <div><b>${fmtKm(route.path.total)}</b><span>direct distance</span></div>
       <div><b>~${fmtDur(flightHours(route.path.total))}</b><span>flight time</span></div>
-      <div><b>${(route.places?.length || route.pois.length).toLocaleString()}</b><span>places on the way</span></div>
+      <div><b>${s.L + s.R}</b><span>famous sights</span></div>
     </div>
     <div class="seat">
-      <button class="seat-side L ${best === 'L' ? 'best' : ''} ${si?.side === 'L' ? 'mine' : ''}" data-action="pick-side" data-s="L"><b>Left side</b><span>${s.nL} places${si?.side === 'L' ? ' · you' : ''}</span></button>
-      <button class="seat-side R ${best === 'R' ? 'best' : ''} ${si?.side === 'R' ? 'mine' : ''}" data-action="pick-side" data-s="R"><b>Right side</b><span>${s.nR} places${si?.side === 'R' ? ' · you' : ''}</span></button>
+      <button class="seat-side L ${best === 'L' ? 'best' : ''} ${si?.side === 'L' ? 'mine' : ''}" data-action="pick-side" data-s="L"><b>Left side</b><span>${s.L} sight${s.L === 1 ? '' : 's'}${si?.side === 'L' ? ' · you' : best === 'L' ? ' · best' : ''}</span></button>
+      <button class="seat-side R ${best === 'R' ? 'best' : ''} ${si?.side === 'R' ? 'mine' : ''}" data-action="pick-side" data-s="R"><b>Right side</b><span>${s.R} sight${s.R === 1 ? '' : 's'}${si?.side === 'R' ? ' · you' : best === 'R' ? ' · best' : ''}</span></button>
     </div>
     ${seatMsg}
-    ${featuredHtml(route, feat, night)}
+    ${featuredHtml(route, feat, night, pickedSide)}
     ${onRoute}
-    <label class="check"><input type="checkbox" id="opt-earth" checked><span><b>3D satellite & window view</b><small>Satellite ground, terrain and glowing night city lights · +${fmtMB(earth.estBytes)}. Extra-sharp ground on ${pickedSide ? `your ${sideWord(pickedSide)}` : 'each'} side (+${fmtMB(sharp.estBytes)}) keeps loading after you're ready.</small></span></label>
+    <label class="check"><input type="checkbox" id="opt-earth" checked><span><b>3D satellite & window view</b><small>Satellite ground, terrain and glowing night city lights. Extra-sharp ground on ${pickedSide ? `your ${sideWord(pickedSide)}` : 'each'} side keeps loading after you're ready.</small></span></label>
     <button class="primary wide" id="btn-save">Save · ready to fly in ~<span id="size">${readyIn(vec.urls.length + earth.urls.length)}</span> min</button>
-    <div class="note tiny">~<span id="mb">${fmtMB(vec.estBytes + earth.estBytes)}</span> on Wi-Fi${pickedSide ? '' : '. Pick your side above to download less'}</div>
+    <div class="note tiny" id="mb">${sizeLine(vec.estBytes + earth.estBytes, sharp.estBytes, true, pickedSide)}</div>
     <div id="save-progress"></div>`;
   $('#opt-earth').onchange = (e) => {
     const on = e.target.checked;
     $('#size').textContent = readyIn(vec.urls.length + (on ? earth.urls.length : 0));
-    $('#mb').textContent = fmtMB(vec.estBytes + (on ? earth.estBytes : 0));
+    $('#mb').innerHTML = sizeLine(vec.estBytes + (on ? earth.estBytes : 0), sharp.estBytes, on, pickedSide);
   };
   $('#btn-save').onclick = () => saveTrip(route, meta, $('#opt-earth').checked);
 }
@@ -963,7 +966,7 @@ function renderFly() {
     </div>
     <div id="window-hint" class="window-hint hidden"></div>
     <div id="toast" class="toast" aria-live="polite"></div>
-    ${state.tour ? tourBarHtml() : ''}
+    ${state.tour ? tourBarHtml() : state.featured.length ? '<div id="strip" class="strip" aria-label="Sights along your flight"></div>' : ''}
     <div class="tap-hint">Tap to show controls</div>
     <div class="dock glass ${state.dockOpen ? 'open' : ''}" id="dock">
       <div class="dock-row" data-action="dock">
@@ -1011,6 +1014,8 @@ function renderFly() {
     updateTour();
   });
   document.body.classList.toggle('touring', !!state.tour);
+  document.body.classList.toggle('dock-open', !!state.dockOpen);
+  stripNext = null; renderStrip(0, 0, null, 0);
   updateWindowHint();
   updateCabin();
   if (state.gpsWanted) {
@@ -1022,6 +1027,7 @@ function renderFly() {
 
 function setDock(open) {
   state.dockOpen = open;
+  document.body.classList.toggle('dock-open', open);
   $('#dock')?.classList.toggle('open', open);
   const c = $('#dock .chev'); if (c) c.textContent = open ? '▾' : '▴';
 }
@@ -1158,8 +1164,9 @@ function applyCamera(pos, heading, alt) {
 // Follow zoom from altitude: close in near the ground, wider at cruise (≈9.6 at 36,000 ft).
 function baseZoom(alt) {
   const a = Math.max(300, alt != null && !Number.isNaN(alt) && alt > 0 ? alt : 10500);
-  const z = 13.6 - Math.log2(a / 700) + (state.view === '3d' ? 0.7 : 0);
-  return Math.min(13.8, Math.max(8, z));
+  // +1.2 on the old value: closer, so the ground reads as ground rather than a map of India
+  const z = 14.8 - Math.log2(a / 700) + (state.view === '3d' ? 0.7 : 0);
+  return Math.min(14, Math.max(8.5, z));
 }
 
 // ---------- live position ----------
@@ -1302,6 +1309,33 @@ function ingest(s, jump = false) {
 }
 
 // Text: stats line, "below you", coming up. Runs twice a second at most.
+// Horizontal strip of the featured sights, in flight order; it keeps the next one in view.
+let stripTouched = 0, stripNext = null;
+function renderStrip(along, kmh, pos, heading) {
+  const el = $('#strip'); if (!el) return;
+  if (!el._wired) {
+    el._wired = true;
+    ['pointerdown', 'wheel', 'touchstart'].forEach((ev) => el.addEventListener(ev, () => { stripTouched = Date.now(); }, { passive: true }));
+  }
+  const next = state.featured.find((p) => p.along > along - 6);
+  const html = state.featured.map((p) => {
+    const past = p.along < along - 6;
+    const km = p.along - along;
+    const when = past ? 'passed' : km < 6 ? 'now' : kmh > 150 ? `in ${fmtDur(km / kmh)}` : `in ${Math.round(km)} km`;
+    const sd = p.d < 5 ? 'B' : pos ? sideOf(pos, heading, p.p).side : p.side;
+    const c = CAT[p.c] || {};
+    return `<button class="scard ${past ? 'past' : ''} ${p === next ? 'next' : ''}" data-action="place" data-id="${esc(p.id)}">
+      ${p.img ? `<img src="${esc(p.img.u)}" alt="" loading="lazy">` : `<span class="sico">${c.icon || '📍'}</span>`}
+      <span class="stext"><span class="badge ${sd}">${sd === 'B' ? 'BELOW' : sd === 'L' ? 'LEFT' : 'RIGHT'}</span><b>${esc(p.n)}</b><small>${esc(when)}</small></span></button>`;
+  }).join('');
+  setHTML('#strip', html);
+  if (next && next.id !== stripNext && Date.now() - stripTouched > 8000) {
+    stripNext = next.id;
+    const card = el.querySelector(`[data-id="${CSS.escape(next.id)}"]`);
+    if (card) el.scrollTo({ left: card.offsetLeft - 8, behavior: 'smooth' });
+  }
+}
+
 // Only touch the DOM when the content really changed, so taps on rows are never lost mid-redraw.
 function setHTML(sel, html) {
   const el = $(sel);
@@ -1385,6 +1419,7 @@ function renderInfo() {
     }),
   ].sort((a, b) => a.at - b.at).slice(0, 6);
   const upEl = $('#upcoming');
+  renderStrip(pr.along, kmh, pos, heading);
   if (upEl) setHTML('#upcoming', rows.length ? `<span class="lbl">Coming up</span>${rows.map((r) => r.html).join('')}` : '');
 }
 

@@ -371,3 +371,19 @@ body.ui-off .spot { bottom: calc(16px + var(--safe-b)); }
 body.embed.touring .dock { display: none; }
 body.embed .tour-bar { bottom: calc(10px + var(--safe-b)); }
 body.embed .spot { bottom: calc(78px + var(--safe-b)); }
+
+/* ---------- v8: sights strip in flight ---------- */
+.strip { position: absolute; left: 0; right: 0; bottom: calc(66px + var(--safe-b)); z-index: 3; display: flex; gap: 8px; overflow-x: auto; padding: 0 8px; scroll-snap-type: x proximity; -webkit-overflow-scrolling: touch; scrollbar-width: none; }
+.strip::-webkit-scrollbar { display: none; }
+.scard { flex: none; width: 216px; height: 70px; display: flex; gap: 10px; align-items: center; padding: 6px; border-radius: 16px; text-align: left; scroll-snap-align: start; color: var(--text); background: rgba(8, 12, 22, 0.74); border: 1px solid rgba(255, 255, 255, 0.1); backdrop-filter: blur(14px); -webkit-backdrop-filter: blur(14px); transition: opacity 0.3s, border-color 0.3s; }
+.scard img { width: 58px; height: 58px; border-radius: 11px; object-fit: cover; flex: none; }
+.scard .sico { width: 58px; height: 58px; display: flex; align-items: center; justify-content: center; font-size: 26px; flex: none; background: rgba(255, 255, 255, 0.05); border-radius: 11px; }
+.scard .stext { min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.scard .badge { width: auto; align-self: flex-start; font-size: 9.5px; padding: 1px 6px; }
+.scard b { font-size: 13.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.scard small { font-size: 11.5px; color: var(--muted); }
+.scard.next { border-color: rgba(255, 0, 110, 0.65); box-shadow: 0 0 0 1px rgba(255, 0, 110, 0.35); }
+.scard.next small { color: #ffb3d1; }
+.scard.past { opacity: 0.45; }
+body.dock-open .strip, body.ui-off .strip, body.embed .strip { display: none; }
+@media (min-width: 720px) { .strip { left: 12px; right: auto; max-width: 440px; } }
