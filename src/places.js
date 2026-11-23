@@ -1,18 +1,19 @@
 // Place packs (built by pipeline/build_places.py) and choosing what to feature.
 import { corridorTiles, project } from './geo.js';
+import { icon } from './icons.js';
 
 const BASE = '/places/v1';
 const CACHE = 'fw-tiles-v1'; // same cache as map tiles: saved, cleared and served together
 const Z = 7;
 
 export const CAT = {
-  historic: { icon: '🏛️', label: 'Historic', color: '#f2b45a' },
-  nature: { icon: '🌳', label: 'Nature', color: '#5fd38d' },
-  water: { icon: '🌊', label: 'Water', color: '#5ab8f2' },
-  terrain: { icon: '⛰️', label: 'Terrain', color: '#c9a27a' },
-  city: { icon: '🏙️', label: 'City', color: '#e6e1ff' },
-  works: { icon: '🌉', label: 'Engineering', color: '#b0b8c8' },
-  battle: { icon: '⚔️', label: 'Battlefield', color: '#f27a6a' },
+  historic: { icon: icon('historic', 16), label: 'Historic', color: '#E8B07A' },
+  nature: { icon: icon('nature', 16), label: 'Nature', color: '#6FCF97' },
+  water: { icon: icon('water', 16), label: 'Water', color: '#7CC4FF' },
+  terrain: { icon: icon('terrain', 16), label: 'Terrain', color: '#C9A27A' },
+  city: { icon: icon('city', 16), label: 'City', color: '#CDB9FF' },
+  works: { icon: icon('works', 16), label: 'Engineering', color: '#B0B8C8' },
+  battle: { icon: icon('battle', 16), label: 'Battlefield', color: '#F28B7A' },
 };
 
 // How far from the flight path each kind of place is still worth pointing out (km).
@@ -60,7 +61,7 @@ export async function routePlaces(path) {
     const pr = project(path, p.p);
     if (pr.along < 0 || pr.along > path.total) continue;
     if (pr.d > ROUTE_KM && pr.d > peakReach(p.el)) continue;
-    out.push({ ...p, along: pr.along, d: pr.d, side: pr.side });
+    out.push({ ...p, desc: p.d, along: pr.along, d: pr.d, side: pr.side }); // pack 'd' is the description; here d is distance
   }
   out.sort((a, b) => a.along - b.along);
   out.version = index.version;
