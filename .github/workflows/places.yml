@@ -43,7 +43,7 @@ jobs:
           if [ -n "${{ github.event.inputs.bbox }}" ]; then ARGS="--bbox ${{ github.event.inputs.bbox }}"; fi
           python pipeline/build_places.py --out public/places $ARGS 2>&1 | tee pipeline/out/last_run.log
       - name: Commit packs and report
-        if: always()
+        if: success() || failure()  # not when a newer run cancelled this one
         run: |
           git config user.name "Anurag Raj"
           git config user.email "anuragraj12@users.noreply.github.com"
@@ -51,7 +51,7 @@ jobs:
           if [ "${{ steps.build.outcome }}" = "success" ]; then git add public/places; fi
           git diff --cached --quiet && exit 0
           git commit -m "Place packs: ${{ steps.build.outcome }} ($(date -u +%F))"
-          git pull --rebase origin main
+          git pull --rebase -X theirs origin main  # this run's report and packs win over an older run's
           git push
       - name: Fail if build failed
         if: steps.build.outcome != 'success'
