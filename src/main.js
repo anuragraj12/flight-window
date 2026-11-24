@@ -63,6 +63,10 @@ async function loadJSON(u) { return (await fetch(u)).json(); }
 async function loadAirports() { state.airports ??= await loadJSON('/data/airports.json'); return state.airports; }
 async function loadPlaces() { state.places ??= await loadJSON('/data/places.json'); return state.places; }
 async function loadGeo() { state.geo ??= await loadJSON('/data/geo.json'); return state.geo; }
+async function loadGuides() {
+  if (state.guides === undefined) state.guides = await loadJSON('/data/guides.json').catch(() => null);
+  return state.guides;
+}
 async function loadEco() {
   if (state.eco === undefined) state.eco = await loadJSON('/data/eco.json').catch(() => null);
   return state.eco;
@@ -99,6 +103,7 @@ async function makeRoute(from, to) {
     poisFor(path),
     routePlaces(path).catch((e) => { console.warn('place packs unavailable', e); return []; }),
     loadEco(),
+    loadGuides(),
   ]);
   return { from, to, path, pois, places, lands: routeLandscapes(eco, path), sides: sideScore(pois, places) };
 }
@@ -208,12 +213,87 @@ function openLandscape(l) {
       ${l.x ? `<section><h4>What it is</h4><p>${esc(units(l.x))}</p></section>` : ''}
       ${b.tip ? `<section class="spot-tip">${icon('eye', 22)}<div><b>How to recognise it from the air</b><p>${esc(b.tip)} Much of it is farmland today; the natural cover survives on hills and in protected areas.</p></div></section>` : ''}
       <section class="facts"><div><span>Type</span><b>${esc(l.biome || b.short)}</b></div><div><span>Realm</span><b>${esc(l.realm || '—')}</b></div></section>
+      ${guideLink(l.name) ? `<section><h4>Read more</h4>${guideLink(l.name)}</section>` : ''}
       <div class="place-foot"><span class="ok">${icon('check', 15)} Works in flight mode</span>${l.wp ? `<a href="https://en.wikipedia.org/wiki/${encodeURIComponent(l.wp.replace(/ /g, '_'))}" target="_blank" rel="noopener">Wikipedia →</a>` : ''}</div>
       <div class="src">Map: RESOLVE Ecoregions 2017 (CC BY 4.0). Text from Wikipedia (CC BY-SA)</div>
     </div></div>`;
   ov.classList.add('show');
   ov.querySelector('.place-box').scrollTop = 0;
-  ov.onclick = (e) => { if (e.target === ov || e.target.closest('[data-place="close"]')) ov.classList.remove('show'); };
+  ov.onclick = (e) => {
+    const gl = e.target.closest('[data-guide]');
+    if (gl) { ov.classList.remove('show'); openGuideEntry('land', gl.dataset.guide); return; }
+    if (e.target === ov || e.target.closest('[data-place="close"]')) ov.classList.remove('show');
+  };
+}
+
+// ---------- guides: clouds and India from the air ----------
+const GUIDE_LABELS = { clouds: ['From the plane', 'What it means for your flight', 'flight'], land: ['From the plane', 'Where in India', 'where'] };
+function guideOverlay() {
+  let ov = $('#guide');
+  if (!ov) { ov = document.createElement('div'); ov.id = 'guide'; document.body.appendChild(ov); }
+  ov.onclick = (e) => {
+    const t = e.target.closest('[data-g]');
+    if (e.target === ov || e.target.closest('[data-g="close"]')) { ov.classList.remove('show'); return; }
+    if (!t) return;
+    if (t.dataset.g === 'tab') openGuides(t.dataset.k);
+    else if (t.dataset.g === 'entry') openGuideEntry(t.dataset.k, t.dataset.id);
+    else if (t.dataset.g === 'back') openGuides(t.dataset.k);
+  };
+  return ov;
+}
+const guideCard = (k, e) => `<button class="g-card" data-g="entry" data-k="${k}" data-id="${esc(e.id)}">
+    <span class="g-img">${e.img ? `<img src="${esc(e.img.u)}" alt="" loading="lazy">` : icon(k === 'clouds' ? 'cloud' : 'terrain', 28)}</span>
+    <b>${esc(e.title)}</b><small>${esc(e.short)}</small></button>`;
+async function openGuides(tab = 'clouds') {
+  const g = await loadGuides();
+  if (!g) { showToast(icon('book', 22), 'Guides not available', 'Open the app once with internet to save them'); return; }
+  const ov = guideOverlay();
+  const sec = g[tab];
+  ov.innerHTML = `<div class="place-box guide-box" role="dialog" aria-label="Guides">
+    <div class="g-top"><h3>Guides</h3><button class="pl-close" data-g="close" aria-label="Close">${icon('close', 18)}</button></div>
+    <div class="seg g-tabs">${Object.entries(g).map(([k, v]) => `<button data-g="tab" data-k="${k}" class="${k === tab ? 'on' : ''}">${esc(v.title)} <small>${v.entries.length}</small></button>`).join('')}</div>
+    <label class="g-search">${icon('search', 16)}<input id="g-q" type="search" placeholder="Search ${esc(sec.title.toLowerCase())}" autocomplete="off"></label>
+    <p class="g-intro">${esc(sec.intro)}</p>
+    <div class="g-grid" id="g-grid">${sec.entries.map((e) => guideCard(tab, e)).join('')}</div>
+    <div class="src">Photos: Wikimedia Commons, credited on each entry. Works in flight mode.</div>
+  </div>`;
+  ov.classList.add('show');
+  ov.querySelector('.guide-box').scrollTop = 0;
+  $('#g-q').oninput = (e) => {
+    const q = e.target.value.trim().toLowerCase();
+    const re = new RegExp(`\\b${q.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`, 'i'); // word starts: "salt" finds salt pans, not basalt
+    const hits = sec.entries.filter((x) => !q || re.test(`${x.title} ${x.short} ${x.what} ${x.plane}`));
+    $('#g-grid').innerHTML = hits.map((x) => guideCard(tab, x)).join('') || '<div class="note">Nothing matches.</div>';
+  };
+}
+async function openGuideEntry(tab, id) {
+  const g = await loadGuides();
+  const e = g?.[tab]?.entries.find((x) => x.id === id);
+  if (!e) return;
+  const [l1, l2, k2] = GUIDE_LABELS[tab];
+  const ov = guideOverlay();
+  ov.innerHTML = `<div class="place-box guide-box" role="dialog" aria-label="${esc(e.title)}">
+    <div class="place-img ${e.img ? '' : 'none land'}">${e.img ? `<img src="${esc(e.img.u)}" alt="${esc(e.title)}"><span class="credit">Photo: ${esc(e.img.by)} · ${esc(e.img.lic)} · Wikimedia Commons</span>` : `<span class="big-ico">${icon(tab === 'clouds' ? 'cloud' : 'terrain', 44)}</span>`}
+      <button class="g-back" data-g="back" data-k="${tab}" aria-label="Back to the guide">${icon('back', 18)} ${esc(g[tab].title)}</button>
+      <button class="pl-close" data-g="close" aria-label="Close">${icon('close', 18)}</button></div>
+    <div class="place-body">
+      <h3>${esc(e.title)}</h3><div class="hi">${esc(e.short)}</div>
+      <section><h4>What it is</h4><p>${esc(e.what)}</p></section>
+      <section class="spot-tip">${icon('eye', 22)}<div><b>${l1}</b><p>${esc(e.plane)}</p></div></section>
+      <section><h4>${l2}</h4><p>${esc(e[k2])}</p></section>
+      <div class="src">Text: Flight Companion. Photo via Wikipedia's "${esc(e.article)}" article.</div>
+    </div></div>`;
+  ov.classList.add('show');
+  ov.querySelector('.guide-box').scrollTop = 0;
+}
+// A guide entry that explains this place or landscape, if any (by name).
+function guideFor(name) {
+  const land = state.guides?.land?.entries || [];
+  return land.find((e) => (e.match || []).some((m) => name.toLowerCase().includes(m.toLowerCase())));
+}
+function guideLink(name) {
+  const e = name && guideFor(name);
+  return e ? `<button class="next-row g-link" data-guide="${esc(e.id)}">${e.img ? `<img src="${esc(e.img.u)}" alt="">` : `<span class="nx-ico">${icon('book', 22)}</span>`}<span><b>${esc(e.title)}</b><small>From the guide · ${esc(e.short)}</small></span><em>${icon('right', 16)}</em></button>` : '';
 }
 
 function setupPlaces() {
@@ -372,6 +452,7 @@ function openPlace(id) {
       ${facts.length ? `<section class="facts">${facts.map(([k, v]) => `<div><span>${esc(k)}</span><b>${esc(v)}</b></div>`).join('')}</section>` : ''}
       ${p.xl ? `<section><h4>The story</h4><p>${esc(units(p.xl))}</p></section>` : ''}
       ${tip ? `<section class="spot-tip">${icon('eye', 22)}<div><b>How to spot it from the air</b><p>${esc(tip)}</p></div></section>` : ''}
+      ${guideLink(p.n) ? `<section><h4>From the guide</h4>${guideLink(p.n)}</section>` : ''}
       ${next ? `<section><h4>Next on your flight</h4><button class="next-row" data-place-next="${esc(next.id)}">${next.img ? `<img src="${esc(next.img.u)}" alt="">` : `<span class="nx-ico">${icon(next.c, 22)}</span>`}<span><b>${esc(next.n)}</b><small>${esc(kindLabel(next))} · ${sideWord(next.side)}</small></span><em>${fmtDur(Math.max(0, next.along - p.along) / 800)} later</em></button></section>` : ''}
       <div class="place-foot">
         <span class="ok">${icon('check', 15)} Works in flight mode</span>
@@ -384,6 +465,8 @@ function openPlace(id) {
   const resume = state.tour && state.simRunning;
   if (resume) setTourPlaying(false);
   ov.onclick = (e) => {
+    const gl = e.target.closest('[data-guide]');
+    if (gl) { ov.classList.remove('show'); openGuideEntry('land', gl.dataset.guide); return; }
     const nx = e.target.closest('[data-place-next]');
     if (nx) { openPlace(nx.dataset.placeNext); return; }
     if (e.target === ov || e.target.closest('[data-place="close"]')) { ov.classList.remove('show'); if (resume && state.tour) setTourPlaying(true); }
@@ -624,6 +707,11 @@ function renderHome() {
         ${trips ? `<h2 class="sec">Your flights</h2><div class="tcards">${trips}</div>` : ''}
         ${online ? `<h2 class="sec">Watch a sample flight</h2>
         <div class="samples">${SAMPLES.map(([a, b, note]) => `<button class="sample" data-action="sample" data-r="${a}-${b}"><span class="s-play">${icon('play', 13)}</span><b>${a} → ${b}</b><small>${note}</small></button>`).join('')}</div>` : '<div class="note">You are offline. Saving a new flight needs internet.</div>'}
+        <h2 class="sec">Guides</h2>
+        <div class="g-home">
+          <button class="g-home-card" data-action="guides" data-k="clouds"><span class="gh-ico">${icon('cloud', 22)}</span><b>Clouds</b><small>What you see above the clouds, and what it means for your flight</small></button>
+          <button class="g-home-card" data-action="guides" data-k="land"><span class="gh-ico land">${icon('terrain', 22)}</span><b>India from the air</b><small>Ravines, deltas, salt pans, tea gardens and more</small></button>
+        </div>
         <div class="foot"><span id="storage"></span>${state.trips.length ? `<button class="link" data-action="clear">Clear all offline maps</button>` : ''}</div>
       </div>
       <div class="home-bar">
@@ -822,6 +910,7 @@ async function saveTrip(route, meta, withEarth) {
       buildUrlList(earthStyle, route.path, spots, tiles).urls.forEach((u) => ess.add(u));
       sharp = buildUrlList(earthStyle, route.path, spots, corridorTiles(route.path, sharpPlan(side), []), { skipVector: true }).urls.filter((u) => !ess.has(u));
     }
+    (state.guides ? Object.values(state.guides).flatMap((g) => g.entries) : []).forEach((e) => e.img && ess.add(e.img.u));
     if (route.places?.length) imageUrls(route.places, { total: route.path.total, hours: flightHours(route.path.total) }).forEach((u) => ess.add(u));
     const id = `${route.from.code}-${route.to.code}-${Date.now().toString(36)}`;
     await saveStyle(id, style);
@@ -1085,6 +1174,7 @@ function renderFly() {
           <button data-action="sim" id="btn-sim">Simulate</button>
           <button class="icon ${state.follow ? 'on' : ''}" data-action="follow" id="btn-follow" title="Follow the plane" aria-label="Follow the plane">${icon('gps', 19)}</button>
           <button class="icon" data-action="story" title="Flight story" aria-label="Flight story">${icon('film', 19)}</button>
+          <button class="icon" data-action="guides" title="Guides" aria-label="Guides">${icon('book', 19)}</button>
         </div>
         ${state.trip?.pending ? `<div class="note warn">Maps are still downloading (<span data-dl-text="${esc(state.trip.id)}">${Math.round(((state.trip.done || 0) / (state.trip.files || 1)) * 100)}%</span>). Keep the app open on Wi-Fi before you fly.</div>` : ''}
         <div id="sim-row" class="sim-row hidden">
@@ -1698,6 +1788,7 @@ app.addEventListener('click', async (e) => {
     if (t && lists) { runDownload(t, lists); renderHome(); }
   } else if (a === 'story') { openStory();
   } else if (a === 'place') { openPlace(el.dataset.id);
+  } else if (a === 'guides') { openGuides(el.dataset.k || 'clouds');
   } else if (a === 'land') {
     const i = el.dataset.i;
     openLandscape(i != null ? state.route?.lands?.[+i] : state.landNow);
