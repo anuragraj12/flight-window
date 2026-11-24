@@ -17,6 +17,7 @@ import '@fontsource/inter/latin-600.css';
 import '@fontsource/space-grotesk/latin-500.css';
 import '@fontsource/space-grotesk/latin-600.css';
 import { icon, EV_ICON } from './icons.js';
+import { ecoAt, routeLandscapes, biomeInfo } from './landscapes.js';
 import { routePlaces, pickFeatured, sideHighlights, imageUrls, attachPlaces, spotTip, CAT } from './places.js';
 
 maplibregl.setWorkerUrl(workerUrl);
@@ -62,6 +63,10 @@ async function loadJSON(u) { return (await fetch(u)).json(); }
 async function loadAirports() { state.airports ??= await loadJSON('/data/airports.json'); return state.airports; }
 async function loadPlaces() { state.places ??= await loadJSON('/data/places.json'); return state.places; }
 async function loadGeo() { state.geo ??= await loadJSON('/data/geo.json'); return state.geo; }
+async function loadEco() {
+  if (state.eco === undefined) state.eco = await loadJSON('/data/eco.json').catch(() => null);
+  return state.eco;
+}
 const hiAreasFor = (a, b) => [areaAround(a.lon, a.lat), areaAround(b.lon, b.lat)];
 const routeSpots = (from, to) => {
   const spots = [[from.lon, from.lat, 25, MAX_Z], [to.lon, to.lat, 25, MAX_Z]];
@@ -90,11 +95,12 @@ function searchAirports(q) {
 // ---------- route + points of interest ----------
 async function makeRoute(from, to) {
   const path = buildPath(greatCircle([from.lon, from.lat], [to.lon, to.lat], 10));
-  const [pois, places] = await Promise.all([
+  const [pois, places, eco] = await Promise.all([
     poisFor(path),
     routePlaces(path).catch((e) => { console.warn('place packs unavailable', e); return []; }),
+    loadEco(),
   ]);
-  return { from, to, path, pois, places, sides: sideScore(pois, places) };
+  return { from, to, path, pois, places, lands: routeLandscapes(eco, path), sides: sideScore(pois, places) };
 }
 
 async function poisFor(path) {
@@ -173,6 +179,43 @@ function featuredHtml(route, feat, night, side) {
   </section>`;
 }
 
+function landsHtml(route) {
+  const lands = route.lands || [];
+  if (lands.length < 2) return '';
+  return `<section class="lands">
+    <div class="feat-head"><h3>Landscapes you'll cross</h3><span>${lands.length} natural regions</span></div>
+    <div class="land-row">${lands.map((l, i) => `<button class="land-chip" data-action="land" data-i="${i}">
+      <span class="lc-bar" style="--w:${Math.max(18, Math.min(100, ((l.end - l.start) / route.path.total) * 220))}%"></span>
+      <b>${esc(shortEco(l.name))}</b><small>${esc(biomeInfo(l.biome).short)} · ${fmtDur((l.end - l.start) / 800)}</small></button>`).join('')}</div>
+  </section>`;
+}
+// "Narmada Valley dry deciduous forests" -> "Narmada Valley" for tight spaces; the sheet shows the full name.
+const shortEco = (n) => n.replace(/\s+(tropical|subtropical|moist|dry|deciduous|evergreen|broadleaf|semi-evergreen|montane|thorn|scrub|forests?|rain|grasslands?|savanna|and|&|xeric|shrublands?|conifer|pine|alpine|meadows|mixed|sub-alpine|subalpine|steppe|freshwater|swamp|mangroves?|desert)\b.*$/i, '').trim() || n;
+
+function openLandscape(l) {
+  if (!l) return;
+  const b = biomeInfo(l.biome);
+  const lands = state.route?.lands || [];
+  const run = lands.find((x) => x.name === l.name);
+  let ov = $('#place');
+  if (!ov) { ov = document.createElement('div'); ov.id = 'place'; document.body.appendChild(ov); }
+  ov.innerHTML = `<div class="place-box" role="dialog" aria-label="${esc(l.name)}">
+    <div class="place-img none land"><span class="big-ico">${icon('terrain', 44)}</span><span class="grab"></span><button class="pl-close" data-place="close" aria-label="Close">${icon('close', 18)}</button></div>
+    <div class="place-body">
+      <div class="pills"><span class="cat-pill" style="--c:#6FCF97">${esc(b.short)}</span><span class="cat-pill plain">Natural region</span></div>
+      <h3>${esc(l.name)}</h3>
+      ${run ? `<div class="look-box B">${icon('down', 22)}<div><b>Below you for about ${fmtDur(Math.max(0.1, (run.end - run.start) / 800))}</b><small>from ${sinceTakeoff(run.start)} after take-off</small></div></div>` : ''}
+      ${l.x ? `<section><h4>What it is</h4><p>${esc(units(l.x))}</p></section>` : ''}
+      ${b.tip ? `<section class="spot-tip">${icon('eye', 22)}<div><b>How to recognise it from the air</b><p>${esc(b.tip)} Much of it is farmland today; the natural cover survives on hills and in protected areas.</p></div></section>` : ''}
+      <section class="facts"><div><span>Type</span><b>${esc(l.biome || b.short)}</b></div><div><span>Realm</span><b>${esc(l.realm || '—')}</b></div></section>
+      <div class="place-foot"><span class="ok">${icon('check', 15)} Works in flight mode</span>${l.wp ? `<a href="https://en.wikipedia.org/wiki/${encodeURIComponent(l.wp.replace(/ /g, '_'))}" target="_blank" rel="noopener">Wikipedia →</a>` : ''}</div>
+      <div class="src">Map: RESOLVE Ecoregions 2017 (CC BY 4.0). Text from Wikipedia (CC BY-SA)</div>
+    </div></div>`;
+  ov.classList.add('show');
+  ov.querySelector('.place-box').scrollTop = 0;
+  ov.onclick = (e) => { if (e.target === ov || e.target.closest('[data-place="close"]')) ov.classList.remove('show'); };
+}
+
 function setupPlaces() {
   const r = state.route;
   state.featured = featuredFor(r, mySide(), state.night);
@@ -193,6 +236,9 @@ function planAlerts() {
     items.push({ start: e.start, key: evKey(e), prio: prio + (e.place ? 15 : 0), e });
   }
   for (const p of state.featured) items.push({ start: p.along, key: `pl:${p.id}`, prio: p.f, p });
+  (r.lands || []).forEach((l, i) => {
+    if (i > 0 && l.end - l.start >= 60) items.push({ start: l.start, key: `land:${l.name}`, prio: 28, land: l });
+  });
   const max = Math.max(3, Math.round(flightHours(total) * 6));
   const gap = (total / max) * 0.6;
   const chosen = [];
@@ -750,6 +796,7 @@ async function preview(from, to, meta) {
     <div class="sides" role="group" aria-label="Your window side">${sideBtn('L')}${sideBtn('R')}</div>
     ${si && si.side !== 'C' ? warn : `<div class="hint">Tap the side you're sitting on, facing forward.</div>`}
     ${featuredHtml(route, feat, night, pickedSide)}
+    ${landsHtml(route)}
     <div class="cta">
       <button class="btn-primary big" id="btn-save"><span>Save for flight mode</span><small id="mb">${sizeLine(vec.estBytes + earth.estBytes, sharp.estBytes, true, pickedSide)}</small></button>
       ${feat.length ? `<button class="btn-secondary" data-action="watch">${icon('play', 14)} Watch a one-minute preview</button>` : ''}
@@ -1021,6 +1068,7 @@ function renderFly() {
         <div class="bar thin"><div id="prog"></div></div>
         <div class="dock-sub"><span id="gps-pill" class="pill">GPS off</span><span id="seat-line">${t.seat ? `Seat ${esc(t.seat)}${mySide() ? ` · ${sideWord(mySide())} side` : ''}<span id="faces"></span>` : ''}</span></div>
         <div id="below" class="below-big"></div>
+        <div id="land"></div>
         <div id="upcoming" class="upcoming"></div>
         ${state.events.length ? highlightsHtml(summary(state.events), state.events) : ''}
         <div id="look-row" class="look-row ${state.view === 'window' ? '' : 'hidden'}">
@@ -1424,6 +1472,12 @@ function renderInfo() {
     line = '<b>Open country</b> <span class="muted">no major place within 150 km</span>';
     big = '<span class="lbl">Below you</span><b>Open country or sea</b>';
   }
+  const land = ecoAt(state.eco, pos);
+  state.landNow = land;
+  if (land) line = `${icon('terrain', 16)} <b>${esc(shortEco(land.name))}</b> <span class="muted">below you</span>`;
+  setHTML('#land', land ? `<button class="land-card" data-action="land">
+      <span class="lc-ico">${icon('terrain', 22)}</span>
+      <span class="lc-text"><span class="lbl">Landscape below</span><b>${esc(land.name)}</b><small>${esc(biomeInfo(land.biome).short)}${land.x ? ` · ${esc(units(land.x).split('. ')[0].slice(0, 90))}…` : ''}</small></span></button>` : '');
   const routeNear = onRoute ? (state.route.places || []).filter((p) => Math.abs(p.along - pr.along) < 15 && p.s >= 30 && dist(pos, p.p) < 10).sort((a, b) => b.s - a.s)[0] : null;
   if (routeNear && !nowEv) {
     line = `${CAT[routeNear.c]?.icon || icon('pin')} <b>${esc(routeNear.n)}</b> <span class="muted">below you</span>`;
@@ -1562,6 +1616,12 @@ function checkAlerts(along, kmh, pos, heading) {
       showToast(CAT[p.c]?.icon || icon('pin'), p.n, p.desc || `${kindLabel(p)}${sd ? ` · ${Math.round(p.d)} km away` : ''}`, { img: p.img?.u, id: p.id, kicker, side: sd });
       break;
     }
+    if (it.land) {
+      const l = it.land;
+      showToast(icon('terrain', 22), l.name, `${biomeInfo(l.biome).short} · below you for about ${fmtDur((l.end - l.start) / 800)}`, { kicker: 'Now below you', land: true });
+      state.landToast = l;
+      break;
+    }
     const e = it.e;
     let hint;
     if (e.type === 'r' || e.type === 't') hint = 'Look down';
@@ -1574,11 +1634,11 @@ function checkAlerts(along, kmh, pos, heading) {
   }
 }
 let toastTimer;
-function showToast(ico, title, sub, { img, id, kicker, side } = {}) {
+function showToast(ico, title, sub, { img, id, kicker, side, land } = {}) {
   const t = $('#toast'); if (!t) return;
   t.className = `toast ${side ? `side-${side}` : ''}`;
   t.innerHTML = `${img ? `<img class="t-img" src="${esc(img)}" alt="">` : `<span class="t-ico">${ico}</span>`}<span class="t-text">${kicker ? `<span class="t-kick">${side === 'L' ? icon('left', 14) : side === 'R' ? icon('right', 14) : ''}${esc(kicker)}</span>` : ''}<b>${esc(title)}</b>${sub ? `<small>${esc(sub)}</small>` : ''}</span>`;
-  if (id) { t.dataset.action = 'place'; t.dataset.id = id; } else { delete t.dataset.action; delete t.dataset.id; }
+  if (id) { t.dataset.action = 'place'; t.dataset.id = id; } else if (land) { t.dataset.action = 'land'; delete t.dataset.id; delete t.dataset.i; } else { delete t.dataset.action; delete t.dataset.id; }
   t.classList.remove('show'); void t.offsetWidth; t.classList.add('show');
   try { navigator.vibrate?.(60); } catch { /* not supported */ }
   clearTimeout(toastTimer);
@@ -1638,6 +1698,9 @@ app.addEventListener('click', async (e) => {
     if (t && lists) { runDownload(t, lists); renderHome(); }
   } else if (a === 'story') { openStory();
   } else if (a === 'place') { openPlace(el.dataset.id);
+  } else if (a === 'land') {
+    const i = el.dataset.i;
+    openLandscape(i != null ? state.route?.lands?.[+i] : state.landNow);
   } else if (a === 'edit-route') { $('.sheet.plan')?.classList.remove('collapsed');
   } else if (a === 'watch') {
     const r = state.route, m = state.planMeta || {};
