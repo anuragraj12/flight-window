@@ -11,7 +11,7 @@ on:
         default: ""
   push:
     branches: [main]
-    paths: ["pipeline/**", ".github/workflows/places.yml"]
+    paths: ["pipeline/build_places.py", "pipeline/test_pipeline.py", "pipeline/requirements.txt", ".github/workflows/places.yml"]
   schedule:
     - cron: "17 3 1 * *"
 
