@@ -23,7 +23,9 @@ const FAR_KM = 300;          // big peaks are visible much further away
 
 // From 11 km up, snow peaks stand out far beyond anything else on the ground.
 export const peakReach = (el = 0) => (el >= 8000 ? 300 : el >= 7000 ? 250 : el >= 6000 ? 200 : el >= 5000 ? 150 : 0);
-const reachOf = (p) => Math.max(REACH[p.c] || 50, p.c === 'terrain' ? peakReach(p.el) : 0);
+// Only single summits stand out from far away; a whole range or a pass does not.
+const isPeak = (p) => (p.k === 'mountain' || p.k === 'volcano') && p.el >= 5000;
+const reachOf = (p) => Math.max(REACH[p.c] || 50, isPeak(p) ? peakReach(p.el) : 0);
 
 const abs = (p) => new URL(p, location.origin).href;
 
@@ -60,7 +62,7 @@ export async function routePlaces(path) {
   for (const p of packs.flat()) {
     const pr = project(path, p.p);
     if (pr.along < 0 || pr.along > path.total) continue;
-    if (pr.d > ROUTE_KM && pr.d > peakReach(p.el)) continue;
+    if (pr.d > ROUTE_KM && !(isPeak(p) && pr.d <= peakReach(p.el))) continue;
     out.push({ ...p, desc: p.d, along: pr.along, d: pr.d, side: pr.side }); // pack 'd' is the description; here d is distance
   }
   out.sort((a, b) => a.along - b.along);
@@ -83,7 +85,7 @@ export function featureScore(p, { side = '', night = false, total = 0 } = {}) {
   return p.s * v * sideFit * time * (p.img ? 1 : 0.8);
 }
 
-const SMALL = new Set(['monument', 'temple', 'mosque', 'church building', 'mausoleum', 'stupa', 'ruins', 'lighthouse', 'battle']);
+const SMALL = new Set(['monument', 'temple', 'mosque', 'church building', 'mausoleum', 'stupa', 'ruins', 'lighthouse', 'battle', 'archaeological site']);
 
 // Famous enough to point out at all? Most towns and small temples are not.
 export function isHighlight(p, { night = false, total = Infinity } = {}) {
@@ -92,8 +94,8 @@ export function isHighlight(p, { night = false, total = Infinity } = {}) {
     return p.s >= (night ? 65 : 78);
   }
   if (night) return p.c === 'water' ? p.s >= 55 : false;
-  if (p.c === 'terrain' && p.el >= 5000) return true;
-  if (SMALL.has(p.k)) return p.s >= 85 || (p.u && p.s >= 50); // too small to see unless very famous
+  if (isPeak(p)) return p.d <= ROUTE_KM ? p.s >= 45 : p.el >= 6000 && p.s >= 70; // far away: only the famous giants
+  if (SMALL.has(p.k) && !(p.area >= 1)) return p.s >= 85; // too small to see from 35,000 ft unless world-famous
   if (p.u) return true;
   if (p.k === 'river') return p.s >= 55;
   return p.s >= 45 && (p.img || p.s >= 60);
@@ -154,4 +156,46 @@ export function attachPlaces(events, places) {
     if (p) e.place = p;
   }
   return events;
+}
+
+// "How to spot it from the air": by kind of place, so every sight gets one that holds true.
+const FOREST = 'Look for a large patch of darker, unbroken forest with few fields, roads or villages.';
+const RIDGES = 'Look for a band of wrinkled, darker ridges rising out of the flatter land around it.';
+const COAST = 'Look for the coastline, where brown or green land meets blue water.';
+const TINY = 'Too small to pick out from cruising height. Look for the town or hill it stands in instead.';
+const TIPS = {
+  'national park': FOREST, 'protected area': FOREST, 'nature reserve': FOREST, 'biosphere reserve': FOREST, forest: FOREST,
+  river: 'Look for a wide, pale riverbed. Outside the monsoon it is mostly sand, with thin silver channels winding through it.',
+  lake: 'Look for a flat patch darker than the land around it. It flashes bright if it catches the sun.',
+  reservoir: 'Look for a big sheet of water with a ragged, branching shoreline where it has flooded valleys.',
+  wetland: 'Look for a patchwork of shallow water and green marsh, often dotted with pools.',
+  dam: 'Find the reservoir first, a big sheet of water, then the straight wall of the dam at its narrow end.',
+  waterfall: 'Hard to see from cruising height. Look for the river dropping off the edge of a plateau.',
+  mountain: 'Look for snow-capped summits standing above the haze on the horizon. Clear winter mornings give the best view.',
+  'mountain range': RIDGES, hill: RIDGES, plateau: 'Look for a raised, flat-topped block of land with steep edges, often cut by rivers.',
+  valley: 'Look for a long green trough between ridges, with a river and fields along its floor.',
+  glacier: 'Look for grey-white rivers of ice filling the high valleys.',
+  desert: 'Look for sandy, beige land with almost no fields or trees.',
+  beach: COAST, bay: COAST, lagoon: 'Look for calm, shallow water cut off from the sea by a thin strip of land.', island: COAST,
+  fort: 'Look for thick walls with a regular outline on a hilltop or riverbank. Easier during climb and descent.',
+  castle: 'Look for thick walls with a regular outline. Easier during climb and descent.',
+  palace: TINY, temple: TINY, mosque: TINY, 'church building': TINY, mausoleum: TINY, stupa: TINY, monument: TINY, ruins: TINY,
+  'archaeological site': TINY, lighthouse: TINY,
+  cave: 'The caves are hidden inside the rock. Look for the rocky hill or cliff they are cut into.',
+  bridge: 'Look where the road or railway crosses the river: a thin straight line over the water.',
+  canal: 'Look for an unnaturally straight line of water cutting through the fields.',
+  port: 'Look for docks, cranes and ships along the shore.',
+  airport: 'Look for long straight runways, usually the most geometric thing in sight.',
+  'power station': 'Look for tall chimneys or cooling towers, sometimes with a plume of steam.',
+  battle: 'Nothing of the battle is left to see. The ground is mostly farmland now.',
+};
+
+export function spotTip(p, night = false) {
+  if (p.c === 'city') {
+    return night
+      ? 'Look for a bright orange glow, with lit highways leading out of it like spokes.'
+      : 'Look for a grey sprawl of rooftops, with roads and railway lines running into it from all sides.';
+  }
+  if (night) return p.c === 'water' ? 'Hard to see at night unless the moon is out. Then it shows as a faint silver sheen.' : '';
+  return TIPS[p.k] || '';
 }

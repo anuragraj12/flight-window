@@ -17,7 +17,7 @@ import '@fontsource/inter/latin-600.css';
 import '@fontsource/space-grotesk/latin-500.css';
 import '@fontsource/space-grotesk/latin-600.css';
 import { icon, EV_ICON } from './icons.js';
-import { routePlaces, pickFeatured, sideHighlights, imageUrls, attachPlaces, CAT } from './places.js';
+import { routePlaces, pickFeatured, sideHighlights, imageUrls, attachPlaces, spotTip, CAT } from './places.js';
 
 maplibregl.setWorkerUrl(workerUrl);
 registerSW({ immediate: true });
@@ -277,6 +277,7 @@ function updateTour() {
   const left = $('#tour-left'); if (left) left.textContent = a >= total - 1 ? 'Landed' : `${fmtDur((total - a) / 820)} to landing`;
 }
 
+const units = (t) => String(t).replace(/\bkm2\b/g, 'km²').replace(/\bm2\b/g, 'm²');
 function placeFacts(p) {
   const f = [];
   const yr = (y) => (y < 0 ? `${-y} BCE` : String(y));
@@ -311,6 +312,7 @@ function openPlace(id) {
   const list = (state.trip ? state.featured : state.planFeatured) || [];
   const next = list.find((q) => q.along > p.along + 2 && q.id !== p.id);
   const facts = placeFacts(p);
+  const tip = spotTip(p, state.night);
   let ov = $('#place');
   if (!ov) { ov = document.createElement('div'); ov.id = 'place'; document.body.appendChild(ov); }
   ov.innerHTML = `<div class="place-box" role="dialog" aria-label="${esc(p.n)}">
@@ -320,9 +322,10 @@ function openPlace(id) {
       <div class="pills"><span class="cat-pill" style="--c:${c.color || '#fff'}">${esc(kindLabel(p))}</span>${p.u ? '<span class="cat-pill unesco">UNESCO World Heritage</span>' : ''}${p.adm ? `<span class="cat-pill plain">${esc(p.adm)}</span>` : ''}</div>
       <h3>${esc(p.n)}</h3>${p.hi && p.hi !== p.n ? `<div class="hi">${esc(p.hi)}</div>` : ''}
       <div class="look-box ${side || 'B'}">${icon(side === 'L' ? 'left' : side === 'R' ? 'right' : 'down', 22)}<div><b>${esc(kicker)}</b><small>${esc(where)}</small></div></div>
-      ${p.x || p.desc ? `<section><h4>Why it's famous</h4><p>${esc(p.x || p.desc)}</p></section>` : ''}
+      ${p.x || p.desc ? `<section><h4>Why it's famous</h4><p>${esc(units(p.x || p.desc))}</p></section>` : ''}
       ${facts.length ? `<section class="facts">${facts.map(([k, v]) => `<div><span>${esc(k)}</span><b>${esc(v)}</b></div>`).join('')}</section>` : ''}
-      ${p.xl ? `<section><h4>The story</h4><p>${esc(p.xl)}</p></section>` : ''}
+      ${p.xl ? `<section><h4>The story</h4><p>${esc(units(p.xl))}</p></section>` : ''}
+      ${tip ? `<section class="spot-tip">${icon('eye', 22)}<div><b>How to spot it from the air</b><p>${esc(tip)}</p></div></section>` : ''}
       ${next ? `<section><h4>Next on your flight</h4><button class="next-row" data-place-next="${esc(next.id)}">${next.img ? `<img src="${esc(next.img.u)}" alt="">` : `<span class="nx-ico">${icon(next.c, 22)}</span>`}<span><b>${esc(next.n)}</b><small>${esc(kindLabel(next))} · ${sideWord(next.side)}</small></span><em>${fmtDur(Math.max(0, next.along - p.along) / 800)} later</em></button></section>` : ''}
       <div class="place-foot">
         <span class="ok">${icon('check', 15)} Works in flight mode</span>
